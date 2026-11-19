@@ -106,8 +106,6 @@ def test_config_override_skips_download(tmp_path):
     with patch.object(
         binary_fetch, "ensure_binary", side_effect=AssertionError("must not download")
     ):
-        cfg = resolve_system_config(
-            adb_override=fake_adb, scrcpy_override=fake_scrcpy
-        )
+        cfg = resolve_system_config(adb_override=fake_adb, scrcpy_override=fake_scrcpy)
     assert cfg.adb_bin_path == fake_adb
     assert cfg.scrcpy_bin_path == fake_scrcpy
