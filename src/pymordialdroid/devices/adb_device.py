@@ -720,6 +720,235 @@ class AdbDevice(PymordialBridgeDevice):
             int(x1), int(y1), int(x2), int(y2), duration=steps * step_delay_ms
         )
 
+    # --- MULTI-TOUCH GESTURES (scrcpy-control, two pointers) ---
+
+    def pinch_zoom(
+        self,
+        center_x: float,
+        center_y: float,
+        start_distance: float,
+        end_distance: float,
+        steps: int = 12,
+        step_delay_ms: int = 16,
+    ) -> bool:
+        """Pinch or zoom with two fingers around a center point.
+
+        Two fingers start horizontally opposed at ``start_distance`` apart
+        and move to ``end_distance`` apart, both centered on
+        ``(center_x, center_y)``. ``start_distance > end_distance`` pinches
+        in (zoom out); ``start_distance < end_distance`` zooms out (zoom in).
+
+        Requires the scrcpy-control multi-touch daemon (starts lazily on
+        first call). Falls back to ``input swipe`` when no backend is
+        available — but a single swipe cannot express true two-finger
+        scaling, so the fallback is a best-effort approximation.
+
+        Args:
+            center_x: Center X of the pinch/zoom in input-space pixels.
+            center_y: Center Y of the pinch/zoom in input-space pixels.
+            start_distance: Initial finger separation in pixels.
+            end_distance: Final finger separation in pixels.
+            steps: Number of interpolated move events per finger.
+            step_delay_ms: Delay between move events in milliseconds.
+
+        Returns:
+            True when both fingers complete the gesture, False otherwise.
+        """
+        backend = self._touch_backend(0)
+        scrcpy = backend if getattr(backend, "daemon_running", False) else None
+        if scrcpy is None:
+            scrcpy = self._scrcpy_control()
+            if scrcpy is not None:
+                scrcpy.ensure_started()
+                backend = scrcpy
+        if backend is None:
+            log.warning(
+                "pinch_zoom: no multi-touch backend; approximating with input swipe"
+            )
+            half = start_distance / 2.0
+            return self.swipe(
+                int(center_x - half),
+                int(center_y),
+                int(center_x - end_distance / 2.0),
+                int(center_y),
+                duration=steps * step_delay_ms,
+            )
+
+        # Both fingers start on the horizontal axis, opposed.
+        x0_start = center_x - start_distance / 2.0
+        x1_start = center_x + start_distance / 2.0
+        x0_end = center_x - end_distance / 2.0
+        x1_end = center_x + end_distance / 2.0
+        y = center_y
+
+        if not backend.touch_down(x0_start, y, slot=0):
+            return False
+        if not backend.touch_down(x1_start, y, slot=1):
+            backend.touch_up(slot=0)
+            return False
+
+        try:
+            delay = max(step_delay_ms, 0) / 1000.0
+            for i in range(1, steps + 1):
+                fx = x0_start + (x0_end - x0_start) * i / steps
+                fx2 = x1_start + (x1_end - x1_start) * i / steps
+                time.sleep(delay)
+                if not backend.touch_move(fx, y, slot=0):
+                    return False
+                time.sleep(delay)
+                if not backend.touch_move(fx2, y, slot=1):
+                    return False
+        finally:
+            backend.touch_up(slot=0)
+            backend.touch_up(slot=1)
+        return True
+
+    def two_finger_rotate(
+        self,
+        center_x: float,
+        center_y: float,
+        radius: float,
+        start_angle_deg: float,
+        end_angle_deg: float,
+        steps: int = 12,
+        step_delay_ms: int = 16,
+    ) -> bool:
+        """Rotate two fingers around a center point.
+
+        Two fingers start at opposite ends of a diameter (angle and
+        angle + 180°) and rotate to the end angle. Each finger traces an
+        arc of ``|end_angle - start_angle|`` degrees around the center.
+
+        Requires the scrcpy-control multi-touch daemon (starts lazily on
+        first call).
+
+        Args:
+            center_x: Center X of rotation in input-space pixels.
+            center_y: Center Y of rotation in input-space pixels.
+            radius: Distance from center to each finger in pixels.
+            start_angle_deg: Starting angle in degrees (0 = right, 90 = down).
+            end_angle_deg: Ending angle in degrees.
+            steps: Number of interpolated move events per finger.
+            step_delay_ms: Delay between move events in milliseconds.
+
+        Returns:
+            True when both fingers complete the rotation, False otherwise.
+        """
+        backend = self._touch_backend(0)
+        scrcpy = backend if getattr(backend, "daemon_running", False) else None
+        if scrcpy is None:
+            scrcpy = self._scrcpy_control()
+            if scrcpy is not None:
+                scrcpy.ensure_started()
+                backend = scrcpy
+        if backend is None:
+            log.warning(
+                "two_finger_rotate: no multi-touch backend; cannot "
+                "approximate with single-pointer input"
+            )
+            return False
+
+        import math
+
+        start_rad = math.radians(start_angle_deg)
+        end_rad = math.radians(end_angle_deg)
+
+        def pos(angle_rad: float) -> tuple[float, float]:
+            return (
+                center_x + radius * math.cos(angle_rad),
+                center_y + radius * math.sin(angle_rad),
+            )
+
+        # Finger 0 at start angle, finger 1 at start + 180° (opposed).
+        x0_s, y0_s = pos(start_rad)
+        x1_s, y1_s = pos(start_rad + math.pi)
+        x0_e, y0_e = pos(end_rad)
+        x1_e, y1_e = pos(end_rad + math.pi)
+
+        if not backend.touch_down(x0_s, y0_s, slot=0):
+            return False
+        if not backend.touch_down(x1_s, y1_s, slot=1):
+            backend.touch_up(slot=0)
+            return False
+
+        try:
+            delay = max(step_delay_ms, 0) / 1000.0
+            for i in range(1, steps + 1):
+                t = i / steps
+                # Smooth interpolation using ease-in-out
+                tt = t * t * (3.0 - 2.0 * t)
+                angle = start_rad + (end_rad - start_rad) * tt
+                x0, y0 = pos(angle)
+                x1, y1 = pos(angle + math.pi)
+                time.sleep(delay)
+                if not backend.touch_move(x0, y0, slot=0):
+                    return False
+                time.sleep(delay)
+                if not backend.touch_move(x1, y1, slot=1):
+                    return False
+        finally:
+            backend.touch_up(slot=0)
+            backend.touch_up(slot=1)
+        return True
+
+    # --- SCREEN CHANGE DETECTION ---
+
+    def wait_for_screen_change(
+        self,
+        timeout: float = 10.0,
+        interval: float = 0.5,
+        max_size: int = 320,
+    ) -> bool:
+        """Waits for the screen content to change.
+
+        Repeatedly captures screenshots (downscaled to ``max_size`` for
+        speed) and compares them pixel-by-pixel. Returns True as soon as
+        a change is detected, or False when the timeout expires with no
+        change. Useful for waiting for app launches, page navigations,
+        animations to complete, or toasts to appear.
+
+        Args:
+            timeout: Maximum seconds to wait for a change.
+            interval: Seconds between screenshot comparisons.
+            max_size: Downscale screenshots to this max edge for fast
+                comparison (smaller = faster, less sensitive).
+
+        Returns:
+            True when a screen change is detected, False on timeout.
+        """
+        import hashlib
+
+        import cv2
+        import numpy as np
+
+        def _frame_hash() -> str | None:
+            raw = self.capture_screenshot()
+            if raw is None:
+                return None
+            nparr = np.frombuffer(raw, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                return None
+            h, w = img.shape
+            scale = max_size / max(h, w)
+            if scale < 1.0:
+                img = cv2.resize(img, (int(w * scale), int(h * scale)))
+            return hashlib.sha256(img.tobytes()).hexdigest()
+
+        baseline = _frame_hash()
+        if baseline is None:
+            return False
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            current = _frame_hash()
+            if current is None:
+                continue
+            if current != baseline:
+                return True
+        return False
+
     def type_text(self, text: str, enter: bool = False) -> bool:
         """Types text into the focused input field, escaping shell characters."""
         # Escape characters that could break ADB shell input

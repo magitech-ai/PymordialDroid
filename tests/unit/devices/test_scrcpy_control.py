@@ -632,7 +632,16 @@ def test_no_blob_means_no_scrcpy_attempts():
         }
     )
     # MagicMock system_config -> junk blob path -> _scrcpy_control() is None
-    assert adb._scrcpy_control() is None
+    import pymordialdroid.devices.adb_device as adb_mod
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        adb_mod, "_find_scrcpy_server_blob", lambda adb_bin, scrcpy_bin=None: None
+    )
+    try:
+        assert adb._scrcpy_control() is None
+    finally:
+        monkeypatch.undo()
     assert adb.touch_down(280, 702, slot=0) is True
     assert "input motionevent DOWN 280 702 2>&1" in calls
 
@@ -649,8 +658,17 @@ def test_start_multitouch_public_api():
 
 def test_start_multitouch_false_without_blob():
     adb, _ = _adb_with({})
-    assert adb._scrcpy_control() is None
-    assert adb.start_multitouch() is False
+    import pymordialdroid.devices.adb_device as adb_mod
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        adb_mod, "_find_scrcpy_server_blob", lambda adb_bin, scrcpy_bin=None: None
+    )
+    try:
+        assert adb._scrcpy_control() is None
+        assert adb.start_multitouch() is False
+    finally:
+        monkeypatch.undo()
 
 
 def test_real_blob_lookup_with_tmp_file(tmp_path, monkeypatch):
