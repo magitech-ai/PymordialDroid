@@ -263,6 +263,48 @@ class AndroidController(PymordialController):
                 return True
         return False
 
+    def find_and_tap(
+        self,
+        pymordial_element: PymordialElement,
+        times: int = 1,
+        max_tries: int = 1,
+    ) -> bool:
+        """Finds a UI element on screen and taps its center coordinates.
+
+        Captures a fresh screenshot, locates the element using the UI device,
+        and taps it through the ADB bridge. Combines vision + touch in one
+        call — the core "see and act" primitive for device automation.
+
+        Args:
+            pymordial_element: The element to find
+                (PymordialImage, PymordialText, or PymordialPixel).
+            times: Number of taps to perform at the found coordinates.
+            max_tries: Maximum detection attempts per screenshot.
+
+        Returns:
+            True if the element was found and tapped, False otherwise.
+
+        Example:
+            # Tap the "Connections" menu item in Settings
+            from pymordial.ui.text import PymordialText
+            element = PymordialText(
+                label="Connections", element_text="Connections",
+                og_resolution=(1080, 2340),
+            )
+            controller.find_and_tap(element)
+        """
+        screenshot = self.adb.capture_screenshot()
+        if screenshot is None:
+            return False
+        coords = self.find_element(
+            pymordial_element,
+            pymordial_screenshot=screenshot,
+            max_tries=max_tries,
+        )
+        if coords is not None:
+            return self.click_coord(coords, times=times)
+        return False
+
     def open_app(
         self,
         app_name: str | AndroidApp,

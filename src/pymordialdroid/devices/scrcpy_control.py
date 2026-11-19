@@ -154,14 +154,32 @@ def _find_server_blob(
 
     Mirrors the live-stream convention (blob next to the scrcpy binary),
     falling back to next to the adb binary (bundled layout:
-    ``bin/scrcpy/scrcpy-server`` beside ``adb.exe``). Kept private: the
-    public ``pymordialdroid.live_stream.find_server_blob`` has a different
+    ``bin/scrcpy/scrcpy-server`` beside ``adb.exe``). Also checks the
+    ``scrcpy/`` subdirectory next to adb, since pymordialdroid bundles
+    scrcpy binaries there. Kept private: the public
+    ``pymordialdroid.live_stream.find_server_blob`` has a different
     signature.
     """
+    base = Path(adb_bin).parent
     candidates: list[Path] = []
     if scrcpy_bin is not None:
         candidates.append(Path(scrcpy_bin).parent / "scrcpy-server")
-    candidates.append(Path(adb_bin).parent / "scrcpy-server")
+    # Beside adb (classic scrcpy install layout).
+    candidates.append(base / "scrcpy-server")
+    # Bundled layout: bin/scrcpy/ next to adb.
+    candidates.append(base / "scrcpy" / "scrcpy-server")
+    # Package-relative layout used in editable/source installs:
+    # <pkg>/bin/scrcpy/scrcpy-server
+    candidates.append(
+        Path(__file__).resolve().parent.parent / "bin" / "scrcpy" / "scrcpy-server"
+    )
+    # Data dir layout used by pymordialdroid's packaged binaries.
+    try:
+        from pymordialdroid.config import DATA_DIR
+
+        candidates.append(DATA_DIR / "bin" / "scrcpy" / "scrcpy-server")
+    except Exception:
+        pass
     for candidate in candidates:
         if candidate.is_file():
             return candidate

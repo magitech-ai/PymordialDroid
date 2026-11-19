@@ -69,25 +69,73 @@ def find_server_blob(scrcpy_bin: str | Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _candidate_scrcpy_bins(scrcpy_bin: str | Path) -> list[Path]:
+    """Yields candidate scrcpy binary locations.
+
+    pymordialdroid bundles scrcpy-server and the scrcpy binary in a
+    ``bin/scrcpy/`` subdirectory next to the package, while the scrcpy binary
+    may also sit directly beside ``adb``. Both layouts are tried.
+    """
+    base = Path(scrcpy_bin)
+    candidates: list[Path] = []
+    # Directly beside adb (classic scrcpy install layout).
+    candidates.append(base.parent / "scrcpy")
+    candidates.append(base.parent / "scrcpy.exe")
+    # Bundled layout: bin/scrcpy/scrcpy(+.exe) next to adb.
+    candidates.append(base.parent / "scrcpy" / "scrcpy")
+    candidates.append(base.parent / "scrcpy" / "scrcpy.exe")
+    # Data dir layout used by pymordialdroid's packaged binaries.
+    try:
+        from pymordialdroid.config import DATA_DIR
+
+        candidates.append(DATA_DIR / "bin" / "scrcpy" / "scrcpy")
+        candidates.append(DATA_DIR / "bin" / "scrcpy" / "scrcpy.exe")
+    except Exception:
+        pass
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            result.append(c)
+    return result
+
+
 def detect_server_version(scrcpy_bin: str | Path) -> str | None:
     """Parses ``scrcpy --version`` (``"scrcpy 4.1 ..."``) to ``"4.1"``.
 
     Handles both 2-part (e.g. ``"4.1"``) and 3-part (e.g. ``"3.3.4"``) version
-    strings.
+    strings. Tries multiple candidate locations since pymordialdroid bundles
+    scrcpy in ``bin/scrcpy/`` while standalone installs place it beside adb.
+    Returns ``"4.1"`` as a conservative fallback (the bundled server blob
+    version) when no runnable scrcpy binary is found.
     """
-    try:
-        proc = subprocess.run(
-            [str(scrcpy_bin), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        match = re.search(r"scrcpy\s+(\d+\.\d+(?:\.\d+)?)", proc.stdout or "")
-        return match.group(1) if match else None
-    except Exception as e:
-        log.debug(f"Could not detect scrcpy version: {e}")
-        return None
+    last_error: Exception | None = None
+    for candidate in _candidate_scrcpy_bins(scrcpy_bin):
+        if not candidate.is_file():
+            continue
+        try:
+            proc = subprocess.run(
+                [str(candidate), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            match = re.search(r"scrcpy\s+(\d+\.\d+(?:\.\d+)?)", proc.stdout or "")
+            if match:
+                return match.group(1)
+        except Exception as e:
+            last_error = e
+            log.debug(f"Could not detect scrcpy version from {candidate}: {e}")
+    if last_error:
+        log.debug(f"Could not detect scrcpy version: {last_error}")
+    log.warning(
+        "No runnable scrcpy binary found; defaulting server version to 4.1 "
+        "(the bundled blob version). If your server differs, pass "
+        "server_version explicitly."
+    )
+    return "4.1"
 
 
 def build_server_argv(
