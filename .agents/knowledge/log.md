@@ -1,5 +1,8 @@
 # Knowledge Changelog
 
+## 2026-11-19
+- **Migration**: Migrated root `index.md` metadata to Open Knowledge Format (OKF v0.3) with bundle `title` and `description`.
+
 ## 2026-09-17
 - **Update**: Documented native resolution live streaming mode (`max_size=0`) in `pymordialdroid/display_streaming.md` to prevent coordinate drift and template mismatch when operating real-time CV pipelines against native device assets.
 

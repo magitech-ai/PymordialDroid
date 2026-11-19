@@ -1,10 +1,12 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
+title: "PymordialDroid Knowledge Base"
+description: "Physical Android device automation architecture, configuration, scrcpy display streaming, touch injection backends, and fieldwork findings for PymordialDroid."
 ---
 
 # PymordialDroid Knowledge Base
 
-An Open Knowledge Format (OKF v0.2) knowledge bundle documenting the PymordialDroid physical Android device automation framework.
+An Open Knowledge Format (OKF v0.3) knowledge bundle documenting the PymordialDroid physical Android device automation framework.
 
 ## Domains & Catalogs
 
