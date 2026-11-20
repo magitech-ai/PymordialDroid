@@ -26,7 +26,9 @@ from pymordialdroid.android_controller import AndroidController
 from pymordialdroid.config import SystemConfig
 
 # Point at the ADB binary from the Android platform-tools
-ADB_PATH = Path("/home/vanluther/.gemini/antigravity/scratch/revomon/platform-tools/adb")
+ADB_PATH = Path(
+    "/home/vanluther/.gemini/antigravity/scratch/revomon/platform-tools/adb"
+)
 SCRCPY_PATH = Path("/tmp/dummy_scrcpy")  # dummy, not needed for ADB-only ops
 
 

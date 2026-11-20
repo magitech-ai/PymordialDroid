@@ -23,7 +23,9 @@ from pathlib import Path
 from pymordialdroid.android_controller import AndroidController
 from pymordialdroid.config import SystemConfig
 
-ADB_PATH = Path("/home/vanluther/.gemini/antigravity/scratch/revomon/platform-tools/adb")
+ADB_PATH = Path(
+    "/home/vanluther/.gemini/antigravity/scratch/revomon/platform-tools/adb"
+)
 SCRCPY_PATH = Path("/tmp/dummy_scrcpy")
 
 
@@ -121,9 +123,9 @@ def main() -> None:
             print(f"    Scroll round {scroll_round + 1}/3...")
             scroll_feed(controller, times=2)
             screenshot = controller.adb.capture_screenshot()
-            Path(
-                f"/tmp/instagram_advanced_scroll_{scroll_round}.png"
-            ).write_bytes(screenshot)
+            Path(f"/tmp/instagram_advanced_scroll_{scroll_round}.png").write_bytes(
+                screenshot
+            )
 
             # Try to like a post
             if find_and_like_post(controller):
