@@ -475,6 +475,238 @@ class AndroidController(PymordialController):
             return self.click_coord(coords, times=times)
         return False
 
+    def swipe_to_find_and_tap(
+        self,
+        pymordial_element: PymordialElement,
+        times: int = 1,
+        max_swipes: int = 5,
+        swipe_distance: int = 1000,
+        swipe_duration: int = 500,
+        interval: float = 1.0,
+    ) -> bool:
+        """Swipes until an element is found, then taps it.
+
+        A convenience wrapper around :meth:`find_and_tap_with_retry`
+        with a more descriptive name. Useful for scrollable content
+        (feeds, lists, stories) where the target element may not be
+        immediately visible.
+
+        Args:
+            pymordial_element: The element to find and tap.
+            times: Number of taps to perform at the found coordinates.
+            max_swipes: Maximum number of swipe attempts before giving up.
+            swipe_distance: Distance to swipe in pixels.
+            swipe_duration: Duration of each swipe in milliseconds.
+            interval: Seconds to wait between swipe attempts.
+
+        Returns:
+            True if the element was found and tapped, False otherwise.
+
+        Example:
+            from pymordial.ui.text import PymordialText
+            element = PymordialText(
+                label="Like", element_text="Like",
+                og_resolution=(1080, 2340),
+            )
+            controller.swipe_to_find_and_tap(element, max_swipes=10)
+        """
+        return self.find_and_tap_with_retry(
+            pymordial_element,
+            times=times,
+            max_swipes=max_swipes,
+            swipe_distance=swipe_distance,
+            interval=interval,
+        )
+
+    def wait_for_text(
+        self,
+        text: str,
+        timeout: float = 10.0,
+        interval: float = 0.5,
+        strategy: PymordialExtractStrategy | None = None,
+    ) -> bool:
+        """Waits for specific text to appear on screen.
+
+        Captures a screenshot every ``interval`` seconds and runs OCR
+        text detection. Returns True as soon as the text is found, or
+        False when the timeout expires. Useful for waiting for app
+        launches, page navigations, or modal dialogs to appear.
+
+        Args:
+            text: Text to wait for (case-insensitive substring match).
+            timeout: Maximum seconds to wait.
+            interval: Seconds between detection attempts.
+            strategy: Optional OCR preprocessing strategy.
+
+        Returns:
+            True when the text is found, False on timeout.
+
+        Example:
+            controller.wait_for_text("Connected devices", timeout=10.0)
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                time.sleep(interval)
+                continue
+            coords = self.ui.find_text(
+                text, pymordial_screenshot=screenshot, strategy=strategy
+            )
+            if coords is not None:
+                return True
+            # Also try phrase matching for multi-word text
+            if hasattr(self.ui, "find_text_phrase"):
+                coords = self.ui.find_text_phrase(text, screenshot, strategy=strategy)
+                if coords is not None:
+                    return True
+            time.sleep(interval)
+        return False
+
+    def tap_text(
+        self,
+        text: str,
+        times: int = 1,
+        max_tries: int = 1,
+        strategy: PymordialExtractStrategy | None = None,
+    ) -> bool:
+        """Finds text on screen and taps its center.
+
+        Captures a screenshot, runs OCR to find the text, and taps the
+        found coordinates. A convenience wrapper around
+        :meth:`find_and_tap_phrase` for single-word or multi-word text.
+
+        Args:
+            text: Text to find and tap (case-insensitive).
+            times: Number of taps to perform at the found coordinates.
+            max_tries: Maximum detection attempts per screenshot.
+            strategy: Optional OCR preprocessing strategy.
+
+        Returns:
+            True if the text was found and tapped, False otherwise.
+
+        Example:
+            controller.tap_text("Connected devices")
+        """
+        return self.find_and_tap_phrase(text, times=times, max_tries=max_tries)
+
+    def find_and_drag(
+        self,
+        element: PymordialElement,
+        target_x: int,
+        target_y: int,
+        times: int = 1,
+        max_swipes: int = 5,
+        steps: int = 24,
+        step_delay_ms: int = 16,
+    ) -> bool:
+        """Finds an element by scrolling if necessary, then drags to
+        the specified coordinates.
+
+        Combines :meth:`swipe_to_find` with a drag gesture. Useful for
+        dragging UI elements (sliders, scroll handles, drag handles)
+        to a target position.
+
+        Args:
+            element: The element to find and drag.
+            target_x: Target X coordinate.
+            target_y: Target Y coordinate.
+            times: Number of drag operations to perform.
+            max_swipes: Maximum number of swipe attempts to find element.
+            steps: Number of interpolated move events per drag.
+            step_delay_ms: Delay between move events in milliseconds.
+
+        Returns:
+            True if the element was found and dragged, False otherwise.
+
+        Example:
+            element = PymordialText(
+                label="Slider handle", element_text="Slider",
+                og_resolution=(1080, 2340),
+            )
+            controller.find_and_drag(element, 800, 1200)
+        """
+        coords = self.swipe_to_find(
+            element,
+            max_swipes=max_swipes,
+            swipe_distance=1000,
+            interval=1.0,
+        )
+        if coords is None:
+            return False
+        for _ in range(times):
+            if not self.adb.precise_drag(
+                coords[0],
+                coords[1],
+                target_x,
+                target_y,
+                steps=steps,
+                step_delay_ms=step_delay_ms,
+            ):
+                return False
+        return True
+
+    def find_and_swipe(
+        self,
+        element: PymordialElement,
+        direction: str = "up",
+        distance: int = 1000,
+        max_swipes: int = 5,
+        swipe_duration: int = 500,
+        interval: float = 1.0,
+    ) -> bool:
+        """Finds an element by scrolling if necessary, then swipes from
+        its location in the given direction.
+
+        Args:
+            element: The element to find and swipe from.
+            direction: Direction to swipe ("up", "down", "left", "right").
+            distance: Distance to swipe in pixels.
+            max_swipes: Maximum number of swipe attempts to find element.
+            swipe_duration: Duration of each swipe in milliseconds.
+            interval: Seconds to wait between swipe attempts.
+
+        Returns:
+            True if the element was found and swiped from, False otherwise.
+
+        Example:
+            element = PymordialText(
+                label="Card", element_text="Card title",
+                og_resolution=(1080, 2340),
+            )
+            controller.find_and_swipe(element, direction="up", distance=800)
+        """
+        coords = self.swipe_to_find(
+            element,
+            max_swipes=max_swipes,
+            swipe_distance=1000,
+            interval=interval,
+        )
+        if coords is None:
+            return False
+
+        x, y = coords
+        if direction == "up":
+            target_y = max(0, y - distance)
+            target_x = x
+        elif direction == "down":
+            target_y = y + distance
+            target_x = x
+        elif direction == "left":
+            target_x = max(0, x - distance)
+            target_y = y
+        elif direction == "right":
+            target_x = x + distance
+            target_y = y
+        else:
+            log.warning(f"Unknown direction '{direction}', defaulting to up")
+            target_x = x
+            target_y = max(0, y - distance)
+
+        return self.adb.swipe(target_x, target_y, target_x, target_y, swipe_duration)
+
     def open_app(
         self,
         app_name: str | AndroidApp,
