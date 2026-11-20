@@ -139,6 +139,23 @@ def test_ui_device_ocr_delegation():
     assert lines == ["Line 1", "Line 2"]
 
 
+def test_ui_device_ocr_phrase_delegation():
+    """Test find_text_phrase delegates to OCR device."""
+    mock_ocr = MagicMock()
+    mock_ocr.find_text_phrase.return_value = (150, 300)
+
+    device = AndroidUiDevice(ocr_device=mock_ocr)
+    screen = np.zeros((50, 50, 3), dtype=np.uint8)
+
+    coords = device.find_text_phrase(
+        "Security and privacy", pymordial_screenshot=screen
+    )
+    assert coords == (150, 300)
+    mock_ocr.find_text_phrase.assert_called_once_with(
+        "Security and privacy", screen, strategy=None, max_gap=1
+    )
+
+
 def test_ui_device_read_text_preserves_case():
     """read_text must return lines verbatim (no lowercasing).
 

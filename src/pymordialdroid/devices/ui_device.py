@@ -211,7 +211,16 @@ class AndroidUiDevice(PymordialVisionDevice):
         if isinstance(element, PymordialText):
             text = getattr(element, "element_text", getattr(element, "text", ""))
             strat = getattr(element, "extract_strategy", None)
-            return self.find_text(text, pymordial_screenshot=screenshot, strategy=strat)
+            coords = self.find_text(
+                text, pymordial_screenshot=screenshot, strategy=strat
+            )
+            # Fall back to phrase matching for multi-word text split across
+            # OCR boxes (e.g. "Security and privacy").
+            if coords is None and hasattr(self._ocr_device, "find_text_phrase"):
+                coords = self._ocr_device.find_text_phrase(
+                    text, screenshot, strategy=strat
+                )
+            return coords
 
         if not isinstance(element, PymordialImage):
             # Bounding box center fallback
@@ -326,6 +335,38 @@ class AndroidUiDevice(PymordialVisionDevice):
         if hasattr(self._ocr_device, "find_text"):
             return self._ocr_device.find_text(
                 text_to_find, screenshot, strategy=strategy
+            )
+        return None
+
+    def find_text_phrase(
+        self,
+        phrase: str,
+        pymordial_screenshot: Path | bytes | str | np.ndarray | None = None,
+        strategy: PymordialExtractStrategy | None = None,
+        max_gap: int = 1,
+    ) -> tuple[int, int] | None:
+        """Finds coordinates of a multi-word phrase across consecutive OCR boxes.
+
+        Delegates to :meth:`TesseractDevice.find_text_phrase`. Useful for
+        phrases Tesseract splits into per-word boxes (e.g. "Security and
+        privacy").
+
+        Args:
+            phrase: Multi-word phrase to search for.
+            pymordial_screenshot: Source image.
+            strategy: Optional preprocessing strategy.
+            max_gap: Maximum non-matching boxes allowed between phrase words.
+
+        Returns:
+            (center_x, center_y) of the phrase's bounding box center, or None.
+        """
+        screenshot = self._ensure_screenshot(pymordial_screenshot)
+        if screenshot is None:
+            return None
+
+        if hasattr(self._ocr_device, "find_text_phrase"):
+            return self._ocr_device.find_text_phrase(
+                phrase, screenshot, strategy=strategy, max_gap=max_gap
             )
         return None
 
