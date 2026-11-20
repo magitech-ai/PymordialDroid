@@ -1,9 +1,24 @@
 """Unit tests for PymordialDroid CLI subcommands (add, remove, list)."""
 
+import argparse
+
 import pytest
 
-from pymordialdroid.cli import build_parser, cmd_add, cmd_feed, cmd_list, cmd_remove
-from pymordialdroid.models import DeviceRecord
+from pymordialdroid.cli import (
+    build_parser,
+    cmd_add,
+    cmd_check_text,
+    cmd_close_app,
+    cmd_feed,
+    cmd_find_text,
+    cmd_health,
+    cmd_list,
+    cmd_open_app,
+    cmd_remove,
+    cmd_run_command,
+    cmd_screenshot,
+)
+from pymordialdroid.models import DeviceRecord, FleetDeviceHealth
 
 
 def test_build_parser_subcommands():
@@ -185,3 +200,215 @@ def test_cmd_feed_stop_targets_single_device(mocker):
 
     mock_fc.stop_live_streams.assert_called_once_with(targets=[phones[0]])
     mock_fc.stop_headless_feeds.assert_called_once_with(targets=[phones[0]])
+
+
+# --- New fleet-wide operation command tests ---
+
+
+def test_parser_has_new_subcommands():
+    """Parser must recognize new fleet-wide subcommands."""
+    parser = build_parser()
+
+    subparsers_action = [
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ][0]
+    subcommand_names = set(subparsers_action._name_parser_map.keys())
+
+    for subcommand in (
+        "screenshot",
+        "find-text",
+        "open-app",
+        "close-app",
+        "health",
+        "run-command",
+        "check-text",
+    ):
+        assert subcommand in subcommand_names
+
+
+def _cmd_result(ip, name, success=True, detail="ok", data=None):
+    """Helper to build a FleetOperationResult."""
+    from pymordialdroid.models import FleetOperationResult
+
+    return FleetOperationResult(
+        ip=ip, name=name, success=success, detail=detail, data=data
+    )
+
+
+def test_cmd_screenshot(mocker):
+    """cmd_screenshot calls fleet_capture_screenshots and writes PNGs."""
+    mock_fc = mocker.MagicMock()
+    phones = _two_test_phones(mocker)
+    mock_fc.load_inventory.return_value = phones
+    mock_fc._find_phone_index.side_effect = lambda ident: {"PhoneA": 0}.get(ident)
+    mock_fc.fleet_capture_screenshots = mocker.AsyncMock(
+        return_value={
+            "10.0.0.1": _cmd_result(
+                "10.0.0.1",
+                "PhoneA",
+                success=True,
+                detail="captured",
+                data={
+                    "png_bytes": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                    "width": 1,
+                    "height": 1,
+                },
+            )
+        }
+    )
+    mocker.patch("pymordialdroid.cli.FleetCommander", return_value=mock_fc)
+
+    parser = build_parser()
+    args = parser.parse_args(["screenshot", "--device", "PhoneA"])
+    cmd_screenshot(args)
+
+    mock_fc.fleet_capture_screenshots.assert_called_once_with(targets=[phones[0]])
+
+
+def test_cmd_find_text(mocker):
+    """cmd_find_text calls fleet_find_text_phrase and reports results."""
+    mock_fc = mocker.MagicMock()
+    phones = _two_test_phones(mocker)
+    mock_fc.load_inventory.return_value = phones
+    mock_fc._find_phone_index.side_effect = lambda ident: {"PhoneB": 1}.get(ident)
+    mock_fc.fleet_find_text_phrase = mocker.AsyncMock(
+        return_value={
+            "10.0.0.2": _cmd_result(
+                "10.0.0.2",
+                "PhoneB",
+                success=True,
+                data={"center_x": 100, "center_y": 200},
+            )
+        }
+    )
+    mocker.patch("pymordialdroid.cli.FleetCommander", return_value=mock_fc)
+
+    parser = build_parser()
+    args = parser.parse_args(["find-text", "Connected devices", "--device", "PhoneB"])
+    cmd_find_text(args)
+
+    mock_fc.fleet_find_text_phrase.assert_called_once_with(
+        "Connected devices", targets=[phones[1]]
+    )
+
+
+def test_cmd_open_app(mocker):
+    """cmd_open_app calls fleet_open_app on target devices."""
+    mock_fc = mocker.MagicMock()
+    phones = _two_test_phones(mocker)
+    mock_fc.load_inventory.return_value = phones
+    mock_fc._find_phone_index.side_effect = lambda ident: {"PhoneA": 0}.get(ident)
+    mock_fc.fleet_open_app = mocker.AsyncMock(
+        return_value={
+            "10.0.0.1": _cmd_result("10.0.0.1", "PhoneA", success=True, detail="opened")
+        }
+    )
+    mocker.patch("pymordialdroid.cli.FleetCommander", return_value=mock_fc)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["open-app", "Settings", "com.android.settings", "--device", "PhoneA"]
+    )
+    cmd_open_app(args)
+
+    mock_fc.fleet_open_app.assert_called_once_with(
+        "Settings", "com.android.settings", targets=[phones[0]]
+    )
+
+
+def test_cmd_close_app(mocker):
+    """cmd_close_app calls fleet_close_app on target devices."""
+    mock_fc = mocker.MagicMock()
+    phones = _two_test_phones(mocker)
+    mock_fc.load_inventory.return_value = phones
+    mock_fc._find_phone_index.side_effect = lambda ident: {"PhoneA": 0}.get(ident)
+    mock_fc.fleet_close_app = mocker.AsyncMock(
+        return_value={
+            "10.0.0.1": _cmd_result("10.0.0.1", "PhoneA", success=True, detail="closed")
+        }
+    )
+    mocker.patch("pymordialdroid.cli.FleetCommander", return_value=mock_fc)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["close-app", "com.android.settings", "--device", "PhoneA"]
+    )
+    cmd_close_app(args)
+
+    mock_fc.fleet_close_app.assert_called_once_with(
+        "com.android.settings", targets=[phones[0]]
+    )
+
+
+def test_cmd_health(mocker):
+    """cmd_health calls fleet_device_health and prints a table."""
+    mock_fc = mocker.MagicMock()
+    phones = _two_test_phones(mocker)
+    mock_fc.load_inventory.return_value = phones
+    mock_fc._find_phone_index.side_effect = lambda ident: {"PhoneA": 0}.get(ident)
+    mock_fc.fleet_device_health = mocker.AsyncMock(
+        return_value={
+            "10.0.0.1": FleetDeviceHealth(
+                ip="10.0.0.1",
+                name="PhoneA",
+                connected=True,
+                battery_level=85,
+                last_action="none",
+            )
+        }
+    )
+    mocker.patch("pymordialdroid.cli.FleetCommander", return_value=mock_fc)
+
+    parser = build_parser()
+    args = parser.parse_args(["health", "--device", "PhoneA"])
+    cmd_health(args)
+
+    mock_fc.fleet_device_health.assert_called_once_with(targets=[phones[0]])
+
+
+def test_cmd_run_command(mocker):
+    """cmd_run_command calls fleet_run_command on target devices."""
+    mock_fc = mocker.MagicMock()
+    phones = _two_test_phones(mocker)
+    mock_fc.load_inventory.return_value = phones
+    mock_fc._find_phone_index.side_effect = lambda ident: {"PhoneA": 0}.get(ident)
+    mock_fc.fleet_run_command = mocker.AsyncMock(
+        return_value={
+            "10.0.0.1": _cmd_result(
+                "10.0.0.1", "PhoneA", success=True, data={"output": "root:/ #"}
+            )
+        }
+    )
+    mocker.patch("pymordialdroid.cli.FleetCommander", return_value=mock_fc)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["run-command", "getprop ro.build.version.sdk", "--device", "PhoneA"]
+    )
+    cmd_run_command(args)
+
+    mock_fc.fleet_run_command.assert_called_once_with(
+        "getprop ro.build.version.sdk", targets=[phones[0]]
+    )
+
+
+def test_cmd_check_text(mocker):
+    """cmd_check_text calls fleet_check_text on target devices."""
+    mock_fc = mocker.MagicMock()
+    phones = _two_test_phones(mocker)
+    mock_fc.load_inventory.return_value = phones
+    mock_fc._find_phone_index.side_effect = lambda ident: {"PhoneB": 1}.get(ident)
+    mock_fc.fleet_check_text = mocker.AsyncMock(
+        return_value={"10.0.0.2": _cmd_result("10.0.0.2", "PhoneB", success=True)}
+    )
+    mocker.patch("pymordialdroid.cli.FleetCommander", return_value=mock_fc)
+
+    parser = build_parser()
+    args = parser.parse_args(["check-text", "Connected devices", "--device", "PhoneB"])
+    cmd_check_text(args)
+
+    mock_fc.fleet_check_text.assert_called_once_with(
+        "Connected devices", targets=[phones[1]]
+    )
