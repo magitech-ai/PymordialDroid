@@ -45,6 +45,10 @@ class AndroidController(PymordialController):
 
         self.registry = PluginRegistry()
 
+        # OCR result cache: key = (image_hash, case_sensitive, strategy_name)
+        # value = list[str] of OCR text lines
+        self._ocr_cache: dict[tuple[str, bool, str | None], list[str]] = {}
+
         # 1. Resolve ADB Device
         self.adb: AdbDevice = self._resolve_plugin(
             "adb",
@@ -563,6 +567,89 @@ class AndroidController(PymordialController):
                 coords = self.ui.find_text_phrase(text, screenshot, strategy=strategy)
                 if coords is not None:
                     return True
+            time.sleep(interval)
+        return False
+
+    def wait_for_screen_transition(
+        self,
+        from_text: str | None = None,
+        to_text: str | None = None,
+        timeout: float = 30.0,
+        interval: float = 0.5,
+        strategy: PymordialExtractStrategy | None = None,
+    ) -> bool:
+        """Waits for the screen to transition from one state to another.
+
+        Captures screenshots at regular intervals and runs OCR text
+        detection. Returns True as soon as ``to_text`` is detected on
+        screen. Optionally waits first for ``from_text`` to disappear
+        (indicating the previous screen is gone) before looking for
+        ``to_text``.
+
+        This is useful for automation flows where you need to confirm
+        that a navigation or state change has completed before proceeding
+        (e.g., waiting for a settings page to appear after tapping a
+        menu item).
+
+        Args:
+            from_text: Text that should disappear before the transition
+                is considered complete. If None, only ``to_text`` is
+                waited for.
+            to_text: Text that should appear when the transition is
+                complete. If None, only ``from_text`` disappearing is
+                waited for.
+            timeout: Maximum seconds to wait for the transition.
+            interval: Seconds between detection attempts.
+            strategy: Optional OCR preprocessing strategy.
+
+        Returns:
+            True when the transition is detected, False on timeout.
+
+        Example:
+            # Wait for Settings page to appear after tapping "Connections"
+            controller.wait_for_screen_transition(
+                from_text="Connected devices",
+                to_text="Connections",
+                timeout=10.0,
+            )
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        from_gone = from_text is None
+        to_found = to_text is None
+
+        while time.monotonic() < deadline:
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                time.sleep(interval)
+                continue
+
+            if not from_gone:
+                coords = self.ui.find_text(
+                    from_text, pymordial_screenshot=screenshot, strategy=strategy
+                )
+                if coords is not None:
+                    # from_text still visible — haven't transitioned yet
+                    time.sleep(interval)
+                    continue
+                from_gone = True
+                log.debug(f"from_text '{from_text}' disappeared")
+
+            if not to_found:
+                coords = self.ui.find_text(
+                    to_text, pymordial_screenshot=screenshot, strategy=strategy
+                )
+                if coords is not None:
+                    return True
+                # Also try phrase matching for multi-word text
+                if hasattr(self.ui, "find_text_phrase"):
+                    coords = self.ui.find_text_phrase(
+                        to_text, screenshot, strategy=strategy
+                    )
+                    if coords is not None:
+                        return True
+
             time.sleep(interval)
         return False
 
@@ -1096,6 +1183,65 @@ class AndroidController(PymordialController):
             except Exception as e:
                 log.debug(f"Error shutting down adb device: {e}")
 
+    def auto_heal_on_port_change(
+        self,
+        expected_port: int = 5555,
+        timeout_s: float = 15.0,
+    ) -> bool:
+        """Attempt to auto-heal the ADB connection if the port has changed.
+
+        Android devices sometimes switch their ADB port after a reboot,
+        Wi-Fi reconnect, or when scrcpy releases the dynamic port. This
+        method delegates to the underlying :class:`AdbDevice` auto-heal
+        logic (scanning attached devices via `adb devices -l`, enabling
+        tcpip on the matching serial, and reconnecting on port 5555).
+
+        Args:
+            expected_port: The port we expect the device to be on. If the
+                current port already matches, returns True immediately.
+            timeout_s: Maximum seconds to spend attempting auto-heal.
+
+        Returns:
+            True if the connection is healthy (either already correct or
+            successfully healed), False otherwise.
+
+        Example:
+            if not controller.auto_heal_on_port_change():
+                log.warning("Could not heal ADB connection")
+        """
+        import time
+
+        if self.port == expected_port:
+            # Quick health check before declaring success
+            if self.adb.is_connected():
+                return True
+            # Port matches but connection is dead — try to heal anyway
+
+        deadline = time.monotonic() + timeout_s
+
+        # Try the built-in auto-heal (scans attached devices, enables tcpip)
+        try:
+            if self.adb._try_auto_heal_tcpip():
+                # Re-verify the connection
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(remaining, 2.0))
+                return self.adb.is_connected()
+        except Exception as e:
+            log.debug(f"AdbDevice auto-heal raised: {e}")
+
+        # Fallback: try a direct reconnect on the expected port
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                self.adb.disconnect()
+                self.port = expected_port
+                return self.adb.connect(auto_heal=False)
+        except Exception as e:
+            log.debug(f"Direct reconnect on port {expected_port} failed: {e}")
+
+        return False
+
     def open_app(
         self,
         app_name: str | AndroidApp,
@@ -1160,10 +1306,55 @@ class AndroidController(PymordialController):
         case_sensitive: bool = False,
         strategy: PymordialExtractStrategy | None = None,
     ) -> list[str]:
-        """Reads text lines from image using OCR."""
-        return self.ui.read_text(
+        """Reads text lines from image using OCR.
+
+        Results are cached by image content hash so that repeated calls
+        with the same screenshot (and same case_sensitive/strategy
+        settings) return the cached result without re-running OCR.
+
+        Args:
+            image_path: Path to image, raw bytes, or string path.
+            case_sensitive: Whether OCR should be case-sensitive.
+            strategy: Optional OCR preprocessing strategy.
+
+        Returns:
+            List of text lines detected in the image.
+        """
+        import hashlib
+
+        # Build a cache key from image content + options
+        if isinstance(image_path, (bytes, bytearray)):
+            image_hash = hashlib.sha256(bytes(image_path)).hexdigest()
+        elif isinstance(image_path, str):
+            try:
+                from pathlib import Path as _Path
+
+                p = _Path(image_path)
+                if p.exists():
+                    image_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+                else:
+                    image_hash = hashlib.sha256(image_path.encode()).hexdigest()
+            except Exception:
+                image_hash = hashlib.sha256(image_path.encode()).hexdigest()
+        else:
+            # Path object
+            try:
+                image_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()
+            except Exception:
+                image_hash = str(hash(image_path))
+
+        strategy_name = strategy.name if hasattr(strategy, "name") else str(strategy)
+        cache_key = (image_hash, case_sensitive, strategy_name)
+
+        if cache_key in self._ocr_cache:
+            return self._ocr_cache[cache_key]
+
+        result = self.ui.read_text(
             image_path, case_sensitive=case_sensitive, strategy=strategy
         )
+
+        self._ocr_cache[cache_key] = result
+        return result
 
     def check_text(
         self,
@@ -1172,13 +1363,33 @@ class AndroidController(PymordialController):
         case_sensitive: bool = False,
         strategy: PymordialExtractStrategy | None = None,
     ) -> bool:
-        """Checks if text exists in image using OCR."""
-        return self.ui.check_text(
-            text_to_find,
-            image_path,
-            case_sensitive=case_sensitive,
-            strategy=strategy,
+        """Checks if text exists in image using OCR.
+
+        Results are cached by image content hash (same as
+        :meth:`read_text`), so repeated checks on the same screenshot
+        avoid re-running OCR.
+
+        Args:
+            text_to_find: Text to search for.
+            image_path: Path to image, raw bytes, or string path.
+            case_sensitive: Whether OCR should be case-sensitive.
+            strategy: Optional OCR preprocessing strategy.
+
+        Returns:
+            True if the text is found in the image, False otherwise.
+        """
+        lines = self.read_text(
+            image_path, case_sensitive=case_sensitive, strategy=strategy
         )
+        if case_sensitive:
+            return text_to_find in lines
+        return any(text_to_find.lower() in line.lower() for line in lines)
+
+    def clear_ocr_cache(self) -> int:
+        """Clears the OCR result cache and returns the number of entries removed."""
+        count = len(self._ocr_cache)
+        self._ocr_cache.clear()
+        return count
 
     # --- Convenience Device Operations ---
 
