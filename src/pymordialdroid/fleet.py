@@ -1,6 +1,7 @@
 """Fleet management, inventory persistence, heartbeat monitoring, and batch orchestration."""
 
 import asyncio
+import base64
 import json
 import logging
 import subprocess
@@ -8,6 +9,9 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 from pymordialdroid.config import DATA_DIR, SystemConfig, resolve_system_config
 from pymordialdroid.device import Phone
@@ -20,7 +24,7 @@ from pymordialdroid.discovery import (
     scan_hotspot_devices,
     scan_subnets_for_phones,
 )
-from pymordialdroid.models import DeviceRecord
+from pymordialdroid.models import DeviceRecord, FleetDeviceHealth, FleetOperationResult
 from pymordialdroid.window import WindowLayoutConfig, organize_windows_grid
 
 log = logging.getLogger("pymordialdroid")
@@ -794,6 +798,380 @@ class FleetCommander:
             except Exception:
                 pass
         return count
+
+    # --- FLEET-WIDE SCREENSHOTS ---
+
+    async def fleet_capture_screenshots(
+        self,
+        targets: list[Phone] | None = None,
+        max_size: int = 960,
+    ) -> dict[str, FleetOperationResult]:
+        """Captures a screenshot from every target device concurrently.
+
+        Args:
+            targets: Specific devices to capture. None means all inventory.
+            max_size: Max edge length for each screenshot (smaller = faster).
+
+        Returns:
+            Mapping of device IP -> FleetOperationResult. On success,
+            ``data`` contains ``png_bytes`` (base64-encoded), ``width``,
+            and ``height``.
+        """
+        phones = self._resolve_targets(targets)
+        results: dict[str, FleetOperationResult] = {}
+
+        async def _capture_one(p: Phone) -> None:
+            try:
+                await p.connect(auto_heal=False)
+                raw = await p.device.shell("screencap -p", decode=False)
+                if raw is None:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail="screencap returned no data",
+                    )
+                    return
+                nparr = np.frombuffer(raw, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is None:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail="could not decode screenshot",
+                    )
+                    return
+                h, w = img.shape[:2]
+                scale = max_size / max(h, w)
+                if scale < 1.0:
+                    img = cv2.resize(img, (int(w * scale), int(h * scale)))
+                ok, buf = cv2.imencode(".png", img)
+                if not ok:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail="png encode failed",
+                    )
+                    return
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=True,
+                    detail="captured",
+                    data={
+                        "png_bytes": base64.b64encode(buf.tobytes()).decode("ascii"),
+                        "width": int(img.shape[1]),
+                        "height": int(img.shape[0]),
+                    },
+                )
+            except Exception as e:
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=False,
+                    detail=str(e),
+                )
+
+        await asyncio.gather(*[_capture_one(p) for p in phones])
+        return results
+
+    # --- FLEET-WIDE OCR TEXT SEARCH ---
+
+    async def fleet_find_text_phrase(
+        self,
+        phrase: str,
+        targets: list[Phone] | None = None,
+    ) -> dict[str, FleetOperationResult]:
+        """Finds a multi-word phrase via OCR on every target device.
+
+        Args:
+            phrase: Multi-word phrase to search for.
+            targets: Specific devices to search. None means all inventory.
+
+        Returns:
+            Mapping of device IP -> FleetOperationResult. On success,
+            ``data`` contains ``center_x`` and ``center_y``.
+        """
+        phones = self._resolve_targets(targets)
+        results: dict[str, FleetOperationResult] = {}
+
+        async def _find_one(p: Phone) -> None:
+            try:
+                await p.connect(auto_heal=False)
+                raw = await p.device.shell("screencap -p", decode=False)
+                if raw is None:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail="screencap returned no data",
+                    )
+                    return
+                nparr = np.frombuffer(raw, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is None:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail="could not decode screenshot",
+                    )
+                    return
+                coords = p.controller.ui.find_text_phrase(phrase, img)
+                if coords is None:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail=f"phrase '{phrase}' not found",
+                    )
+                    return
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=True,
+                    detail=f"found '{phrase}'",
+                    data={"center_x": int(coords[0]), "center_y": int(coords[1])},
+                )
+            except Exception as e:
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=False,
+                    detail=str(e),
+                )
+
+        await asyncio.gather(*[_find_one(p) for p in phones])
+        return results
+
+    # --- FLEET-WIDE APP MANAGEMENT ---
+
+    async def fleet_open_app(
+        self,
+        app_name: str,
+        package_name: str,
+        targets: list[Phone] | None = None,
+    ) -> dict[str, FleetOperationResult]:
+        """Opens an app on every target device concurrently.
+
+        Args:
+            app_name: Display name of the app.
+            package_name: Android package name (e.g. com.android.settings).
+            targets: Specific devices. None means all inventory.
+
+        Returns:
+            Mapping of device IP -> FleetOperationResult.
+        """
+        phones = self._resolve_targets(targets)
+        results: dict[str, FleetOperationResult] = {}
+
+        async def _open_one(p: Phone) -> None:
+            try:
+                await p.connect(auto_heal=False)
+                ok = p.controller.open_app(app_name, package_name=package_name)
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=bool(ok),
+                    detail="opened" if ok else "open failed",
+                )
+            except Exception as e:
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=False,
+                    detail=str(e),
+                )
+
+        await asyncio.gather(*[_open_one(p) for p in phones])
+        return results
+
+    async def fleet_close_app(
+        self,
+        package_name: str,
+        targets: list[Phone] | None = None,
+    ) -> dict[str, FleetOperationResult]:
+        """Closes an app on every target device concurrently.
+
+        Args:
+            package_name: Android package name (e.g. com.android.settings).
+            targets: Specific devices. None means all inventory.
+
+        Returns:
+            Mapping of device IP -> FleetOperationResult.
+        """
+        phones = self._resolve_targets(targets)
+        results: dict[str, FleetOperationResult] = {}
+
+        async def _close_one(p: Phone) -> None:
+            try:
+                await p.connect(auto_heal=False)
+                ok = p.controller.close_app(package_name=package_name)
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=bool(ok),
+                    detail="closed" if ok else "close failed",
+                )
+            except Exception as e:
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=False,
+                    detail=str(e),
+                )
+
+        await asyncio.gather(*[_close_one(p) for p in phones])
+        return results
+
+    # --- FLEET-WIDE DEVICE HEALTH ---
+
+    async def fleet_device_health(
+        self,
+        targets: list[Phone] | None = None,
+    ) -> dict[str, FleetDeviceHealth]:
+        """Reports health (battery, connection) for every target device.
+
+        Args:
+            targets: Specific devices. None means all inventory.
+
+        Returns:
+            Mapping of device IP -> FleetDeviceHealth.
+        """
+        phones = self._resolve_targets(targets)
+        results: dict[str, FleetDeviceHealth] = {}
+
+        async def _health_one(p: Phone) -> None:
+            try:
+                await p.connect(auto_heal=False)
+                await p.get_battery()
+                results[p.record.ip] = FleetDeviceHealth(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    connected=p._connected,
+                    battery_level=p.battery_level,
+                    last_action=p.last_action,
+                )
+            except Exception as e:
+                results[p.record.ip] = FleetDeviceHealth(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    connected=False,
+                    battery_level=None,
+                    last_action=str(e),
+                )
+
+        await asyncio.gather(*[_health_one(p) for p in phones])
+        return results
+
+    # --- FLEET-WIDE COMMAND EXECUTION ---
+
+    async def fleet_run_command(
+        self,
+        command: str,
+        targets: list[Phone] | None = None,
+    ) -> dict[str, FleetOperationResult]:
+        """Runs a shell command on every target device concurrently.
+
+        Args:
+            command: ADB shell command to execute.
+            targets: Specific devices. None means all inventory.
+
+        Returns:
+            Mapping of device IP -> FleetOperationResult. On success,
+            ``data`` contains ``output`` (the command's stdout).
+        """
+        phones = self._resolve_targets(targets)
+        results: dict[str, FleetOperationResult] = {}
+
+        async def _run_one(p: Phone) -> None:
+            try:
+                await p.connect(auto_heal=False)
+                output = await p.shell(command)
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=True,
+                    detail="executed",
+                    data={"output": output},
+                )
+            except Exception as e:
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=False,
+                    detail=str(e),
+                )
+
+        await asyncio.gather(*[_run_one(p) for p in phones])
+        return results
+
+    # --- FLEET-WIDE TEXT CHECK ---
+
+    async def fleet_check_text(
+        self,
+        phrase: str,
+        targets: list[Phone] | None = None,
+    ) -> dict[str, FleetOperationResult]:
+        """Checks whether a text phrase is visible on every target device.
+
+        Args:
+            phrase: Multi-word phrase to search for.
+            targets: Specific devices. None means all inventory.
+
+        Returns:
+            Mapping of device IP -> FleetOperationResult. ``success`` is
+            True when the phrase is found.
+        """
+        phones = self._resolve_targets(targets)
+        results: dict[str, FleetOperationResult] = {}
+
+        async def _check_one(p: Phone) -> None:
+            try:
+                await p.connect(auto_heal=False)
+                raw = await p.device.shell("screencap -p", decode=False)
+                if raw is None:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail="screencap returned no data",
+                    )
+                    return
+                nparr = np.frombuffer(raw, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is None:
+                    results[p.record.ip] = FleetOperationResult(
+                        ip=p.record.ip,
+                        name=p.record.name,
+                        success=False,
+                        detail="could not decode screenshot",
+                    )
+                    return
+                found = p.controller.ui.find_text_phrase(phrase, img) is not None
+                detail = (
+                    f"phrase '{phrase}' found"
+                    if found
+                    else f"phrase '{phrase}' not found"
+                )
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=found,
+                    detail=detail,
+                )
+            except Exception as e:
+                results[p.record.ip] = FleetOperationResult(
+                    ip=p.record.ip,
+                    name=p.record.name,
+                    success=False,
+                    detail=str(e),
+                )
+
+        await asyncio.gather(*[_check_one(p) for p in phones])
+        return results
 
     # --- DISCOVERY ADAPTERS ---
 
