@@ -608,3 +608,81 @@ def test_controller_clear_ocr_cache(mocker):
     # After clearing, OCR should be called again
     controller.read_text(b"screenshot_a")
     assert controller.ui.read_text.call_count == 3
+
+
+def test_controller_recognize_swipe_pattern(mocker):
+    """recognize_swipe_pattern detects swipe patterns from gesture events."""
+    controller = AndroidController()
+
+    import base64
+
+    import cv2
+    import numpy as np
+
+    # Create two very different screenshots (high change score)
+    img1 = np.zeros((100, 100, 3), dtype=np.uint8)
+    img1[:] = (255, 0, 0)  # Red
+    _, buf1 = cv2.imencode(".png", img1)
+    screenshot1_b64 = base64.b64encode(buf1.tobytes()).decode("ascii")
+
+    img2 = np.zeros((100, 100, 3), dtype=np.uint8)
+    img2[:] = (0, 255, 0)  # Green
+    _, buf2 = cv2.imencode(".png", img2)
+    screenshot2_b64 = base64.b64encode(buf2.tobytes()).decode("ascii")
+
+    # Events with high change scores (simulating a swipe)
+    events = [
+        {"timestamp": 0.0, "screenshot_b64": screenshot1_b64, "change_score": 0.0},
+        {"timestamp": 0.1, "screenshot_b64": screenshot1_b64, "change_score": 0.0},
+        {"timestamp": 0.2, "screenshot_b64": screenshot2_b64, "change_score": 0.9},
+        {"timestamp": 0.3, "screenshot_b64": screenshot2_b64, "change_score": 0.8},
+        {"timestamp": 0.4, "screenshot_b64": screenshot1_b64, "change_score": 0.0},
+    ]
+
+    patterns = controller.recognize_swipe_pattern(events)
+
+    assert len(patterns) >= 1
+    assert patterns[0]["direction"] in ("up", "down", "left", "right", "unknown")
+    assert patterns[0]["duration_s"] > 0
+    assert "max_change_score" in patterns[0]
+
+
+def test_controller_recognize_swipe_pattern_empty(mocker):
+    """recognize_swipe_pattern returns empty list for no events."""
+    controller = AndroidController()
+    patterns = controller.recognize_swipe_pattern([])
+    assert patterns == []
+
+
+def test_controller_app_usage_sessionize(mocker):
+    """app_usage_sessionize groups app changes into sessions."""
+    controller = AndroidController()
+
+    records = [
+        {"timestamp": 0.0, "app": "com.android.settings", "state": "foreground"},
+        {"timestamp": 5.0, "app": "com.instagram.android", "state": "foreground"},
+        {"timestamp": 10.0, "app": "com.android.settings", "state": "foreground"},
+        # Gap > 30s starts new session
+        {"timestamp": 45.0, "app": "com.whatsapp", "state": "foreground"},
+        {"timestamp": 50.0, "app": "com.android.settings", "state": "foreground"},
+    ]
+
+    sessions = controller.app_usage_sessionize(records, session_gap_seconds=30.0)
+
+    assert len(sessions) == 2
+    # First session: 3 apps over 10 seconds
+    assert sessions[0]["start_timestamp"] == 0.0
+    assert sessions[0]["end_timestamp"] == 10.0
+    assert "com.android.settings" in sessions[0]["apps"]
+    assert "com.instagram.android" in sessions[0]["apps"]
+    # Second session: 2 apps over 5 seconds
+    assert sessions[1]["start_timestamp"] == 45.0
+    assert sessions[1]["end_timestamp"] == 50.0
+    assert "com.whatsapp" in sessions[1]["apps"]
+
+
+def test_controller_app_usage_sessionize_empty(mocker):
+    """app_usage_sessionize returns empty list for no records."""
+    controller = AndroidController()
+    sessions = controller.app_usage_sessionize([])
+    assert sessions == []
