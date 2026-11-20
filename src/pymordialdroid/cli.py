@@ -2,8 +2,10 @@
 
 import argparse
 import asyncio
+import base64
 import logging
 import sys
+from pathlib import Path as _Path
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -239,6 +241,197 @@ def cmd_feed(args: argparse.Namespace) -> None:
         console.print(f"Stopped {live} live stream(s), {mkv} MKV feed(s).")
 
 
+# --- FLEET-WIDE OPERATION COMMANDS ---
+
+
+def cmd_screenshot(args: argparse.Namespace) -> None:
+    """Captures screenshots from target devices."""
+    console = Console()
+    commander = FleetCommander()
+    targets = _resolve_phones(commander, args.device)
+    if not targets:
+        console.print("[red]No matching devices in fleet inventory.[/red]")
+        sys.exit(1)
+
+    results = asyncio.run(commander.fleet_capture_screenshots(targets=targets))
+    count = 0
+    for ip, result in results.items():
+        if result.success and result.data:
+            out_dir = _Path(args.output_dir) if args.output_dir else _Path(".")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            png_bytes = base64.b64decode(result.data["png_bytes"])
+            out_path = out_dir / f"screenshot_{result.name}_{ip.replace('.', '_')}.png"
+            out_path.write_bytes(png_bytes)
+            console.print(f"[green][CAP][/green] {result.name} ({ip}) -> {out_path}")
+            count += 1
+        else:
+            console.print(f"[red][FAIL][/red] {result.name} ({ip}): {result.detail}")
+    if count == 0:
+        sys.exit(1)
+
+
+def cmd_find_text(args: argparse.Namespace) -> None:
+    """Finds a multi-word phrase via OCR on target devices."""
+    console = Console()
+    commander = FleetCommander()
+    targets = _resolve_phones(commander, args.device)
+    if not targets:
+        console.print("[red]No matching devices in fleet inventory.[/red]")
+        sys.exit(1)
+
+    results = asyncio.run(
+        commander.fleet_find_text_phrase(args.phrase, targets=targets)
+    )
+    count = 0
+    for ip, result in results.items():
+        if result.success:
+            cx = result.data.get("center_x") if result.data else "?"
+            cy = result.data.get("center_y") if result.data else "?"
+            console.print(
+                f"[green][FOUND][/green] '{args.phrase}' on {result.name} ({ip}) at ({cx}, {cy})"
+            )
+            count += 1
+        else:
+            console.print(
+                f"[red][NOT FOUND][/red] '{args.phrase}' on {result.name} ({ip}): {result.detail}"
+            )
+    if count == 0:
+        sys.exit(1)
+
+
+def cmd_open_app(args: argparse.Namespace) -> None:
+    """Opens an app on target devices."""
+    console = Console()
+    commander = FleetCommander()
+    targets = _resolve_phones(commander, args.device)
+    if not targets:
+        console.print("[red]No matching devices in fleet inventory.[/red]")
+        sys.exit(1)
+
+    results = asyncio.run(
+        commander.fleet_open_app(args.app_name, args.package_name, targets=targets)
+    )
+    count = 0
+    for ip, result in results.items():
+        if result.success:
+            console.print(
+                f"[green][OPEN][/green] {args.app_name} on {result.name} ({ip})"
+            )
+            count += 1
+        else:
+            console.print(
+                f"[red][FAIL][/red] {args.app_name} on {result.name} ({ip}): {result.detail}"
+            )
+    if count == 0:
+        sys.exit(1)
+
+
+def cmd_close_app(args: argparse.Namespace) -> None:
+    """Closes an app on target devices."""
+    console = Console()
+    commander = FleetCommander()
+    targets = _resolve_phones(commander, args.device)
+    if not targets:
+        console.print("[red]No matching devices in fleet inventory.[/red]")
+        sys.exit(1)
+
+    results = asyncio.run(commander.fleet_close_app(args.package_name, targets=targets))
+    count = 0
+    for ip, result in results.items():
+        if result.success:
+            console.print(
+                f"[green][CLOSE][/green] {args.package_name} on {result.name} ({ip})"
+            )
+            count += 1
+        else:
+            console.print(
+                f"[red][FAIL][/red] {args.package_name} on {result.name} ({ip}): {result.detail}"
+            )
+    if count == 0:
+        sys.exit(1)
+
+
+def cmd_health(args: argparse.Namespace) -> None:
+    """Reports health (battery, connection) for target devices."""
+    console = Console()
+    commander = FleetCommander()
+    targets = _resolve_phones(commander, args.device)
+    if not targets:
+        console.print("[red]No matching devices in fleet inventory.[/red]")
+        sys.exit(1)
+
+    results = asyncio.run(commander.fleet_device_health(targets=targets))
+    table = Table(title="Fleet Device Health", border_style="cyan")
+    table.add_column("IP", style="cyan")
+    table.add_column("Name", style="bold green")
+    table.add_column("Connected", justify="center")
+    table.add_column("Battery", justify="right")
+    table.add_column("Last Action", style="italic")
+
+    for ip, health in results.items():
+        conn_style = "green" if health.connected else "red"
+        table.add_row(
+            health.ip,
+            health.name,
+            f"[{conn_style}]{'Yes' if health.connected else 'No'}[/{conn_style}]",
+            str(health.battery_level) if health.battery_level is not None else "N/A",
+            health.last_action or "-",
+        )
+
+    console.print(table)
+    if not any(h.connected for h in results.values()):
+        sys.exit(1)
+
+
+def cmd_run_command(args: argparse.Namespace) -> None:
+    """Runs a shell command on target devices."""
+    console = Console()
+    commander = FleetCommander()
+    targets = _resolve_phones(commander, args.device)
+    if not targets:
+        console.print("[red]No matching devices in fleet inventory.[/red]")
+        sys.exit(1)
+
+    results = asyncio.run(commander.fleet_run_command(args.command, targets=targets))
+    count = 0
+    for ip, result in results.items():
+        if result.success:
+            output = result.data.get("output", "") if result.data else ""
+            console.print(
+                f"[green][OK][/green] {result.name} ({ip}): {output.strip()[:80]}"
+            )
+            count += 1
+        else:
+            console.print(f"[red][FAIL][/red] {result.name} ({ip}): {result.detail}")
+    if count == 0:
+        sys.exit(1)
+
+
+def cmd_check_text(args: argparse.Namespace) -> None:
+    """Checks whether a phrase is visible on target devices."""
+    console = Console()
+    commander = FleetCommander()
+    targets = _resolve_phones(commander, args.device)
+    if not targets:
+        console.print("[red]No matching devices in fleet inventory.[/red]")
+        sys.exit(1)
+
+    results = asyncio.run(commander.fleet_check_text(args.phrase, targets=targets))
+    count = 0
+    for ip, result in results.items():
+        if result.success:
+            console.print(
+                f"[green][FOUND][/green] '{args.phrase}' on {result.name} ({ip})"
+            )
+            count += 1
+        else:
+            console.print(
+                f"[red][NOT FOUND][/red] '{args.phrase}' on {result.name} ({ip}): {result.detail}"
+            )
+    if count == 0:
+        sys.exit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Builds CLI argument parser with subcommands."""
     parser = argparse.ArgumentParser(
@@ -344,6 +537,95 @@ def build_parser() -> argparse.ArgumentParser:
         help="live: direct H.264 (<100ms, default); mkv: file-tail fallback",
     )
 
+    # screenshot subcommand
+    screenshot_parser = subparsers.add_parser(
+        "screenshot", help="Capture screenshots from target devices"
+    )
+    screenshot_parser.add_argument(
+        "--device",
+        "-d",
+        default=None,
+        help="IP, serial, name, or 0-based rank from list (default: all)",
+    )
+    screenshot_parser.add_argument(
+        "--output-dir",
+        default=".",
+        help="Directory to save screenshot PNGs (default: current directory)",
+    )
+
+    # find-text subcommand
+    find_text_parser = subparsers.add_parser(
+        "find-text",
+        help="Find a multi-word phrase via OCR on target devices",
+    )
+    find_text_parser.add_argument("phrase", help="Text phrase to find")
+    find_text_parser.add_argument(
+        "--device",
+        "-d",
+        default=None,
+        help="IP, serial, name, or 0-based rank from list (default: all)",
+    )
+
+    # open-app subcommand
+    open_app_parser = subparsers.add_parser(
+        "open-app", help="Open an app on target devices"
+    )
+    open_app_parser.add_argument("app_name", help="Display name of the app")
+    open_app_parser.add_argument("package_name", help="Android package name")
+    open_app_parser.add_argument(
+        "--device",
+        "-d",
+        default=None,
+        help="IP, serial, name, or 0-based rank from list (default: all)",
+    )
+
+    # close-app subcommand
+    close_app_parser = subparsers.add_parser(
+        "close-app", help="Close an app on target devices"
+    )
+    close_app_parser.add_argument("package_name", help="Android package name")
+    close_app_parser.add_argument(
+        "--device",
+        "-d",
+        default=None,
+        help="IP, serial, name, or 0-based rank from list (default: all)",
+    )
+
+    # health subcommand
+    health_parser = subparsers.add_parser(
+        "health", help="Report battery/connection health for target devices"
+    )
+    health_parser.add_argument(
+        "--device",
+        "-d",
+        default=None,
+        help="IP, serial, name, or 0-based rank from list (default: all)",
+    )
+
+    # run-command subcommand
+    run_command_parser = subparsers.add_parser(
+        "run-command", help="Run a shell command on target devices"
+    )
+    run_command_parser.add_argument("command", help="Shell command to execute")
+    run_command_parser.add_argument(
+        "--device",
+        "-d",
+        default=None,
+        help="IP, serial, name, or 0-based rank from list (default: all)",
+    )
+
+    # check-text subcommand
+    check_text_parser = subparsers.add_parser(
+        "check-text", help="Check whether a phrase is visible on target devices"
+    )
+    check_text_parser.add_argument("phrase", help="Text phrase to check for")
+    check_text_parser.add_argument(
+        "--device",
+        "-d",
+        default=None,
+        help="IP, serial, name, or 0-based rank from list (default: all)",
+    )
+
     return parser
 
 
@@ -364,6 +646,20 @@ def main() -> None:
         cmd_record(args)
     elif args.command == "feed":
         cmd_feed(args)
+    elif args.command == "screenshot":
+        cmd_screenshot(args)
+    elif args.command == "find-text":
+        cmd_find_text(args)
+    elif args.command == "open-app":
+        cmd_open_app(args)
+    elif args.command == "close-app":
+        cmd_close_app(args)
+    elif args.command == "health":
+        cmd_health(args)
+    elif args.command == "run-command":
+        cmd_run_command(args)
+    elif args.command == "check-text":
+        cmd_check_text(args)
     elif args.command == "tui" or args.command is None:
         try:
             asyncio.run(run_app())
