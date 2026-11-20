@@ -83,3 +83,82 @@ def test_controller_ocr_and_extended_delegations(mocker):
     mocker.patch.object(controller.bridge, "go_back")
     controller.go_back()
     controller.bridge.go_back.assert_called_once()
+
+
+def test_controller_find_and_tap_phrase(mocker):
+    """find_and_tap_phrase captures screenshot, finds phrase, taps it."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    mock_coords = (150, 300)
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+    controller.ocr.find_text_phrase = mocker.Mock(return_value=mock_coords)
+    controller.adb.tap = mocker.Mock(return_value=True)
+
+    result = controller.find_and_tap_phrase("Security and privacy", times=2)
+
+    assert result is True
+    controller.adb.capture_screenshot.assert_called_once()
+    controller.ocr.find_text_phrase.assert_called_once_with(
+        "Security and privacy", mock_screenshot, strategy=None, max_gap=1
+    )
+    controller.adb.tap.assert_called_once_with(mock_coords, times=2)
+
+
+def test_controller_find_and_tap_phrase_not_found(mocker):
+    """find_and_tap_phrase returns False when phrase is not found."""
+    controller = AndroidController()
+    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake")
+    controller.ocr.find_text_phrase = mocker.Mock(return_value=None)
+
+    result = controller.find_and_tap_phrase("NonExistent Phrase")
+
+    assert result is False
+
+
+def test_controller_wait_for_element(mocker):
+    """wait_for_element polls and returns True when element found."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    mock_coords = (200, 400)
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+
+    # find_element returns None first time, then coords second time
+    calls = [0]
+
+    def fake_find(element, pymordial_screenshot=None, max_tries=1):
+        calls[0] += 1
+        if calls[0] >= 2:
+            return mock_coords
+        return None
+
+    controller.find_element = mocker.Mock(side_effect=fake_find)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.wait_for_element(mocker.Mock(), timeout=5.0, interval=0.1)
+
+    assert result is True
+    assert calls[0] == 2
+    time.sleep = real_sleep
+
+
+def test_controller_wait_for_element_timeout(mocker):
+    """wait_for_element returns False when element never appears."""
+    controller = AndroidController()
+    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake")
+    controller.find_element = mocker.Mock(return_value=None)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.wait_for_element(mocker.Mock(), timeout=1.0, interval=0.1)
+
+    assert result is False
+    time.sleep = real_sleep

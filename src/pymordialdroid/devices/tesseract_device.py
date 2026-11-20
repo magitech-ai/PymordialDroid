@@ -146,6 +146,113 @@ class TesseractDevice(PymordialOCRDevice):
             log.error(f"Error finding text '{search_text}' with Tesseract: {e}")
             return None
 
+    def find_text_phrase(
+        self,
+        search_text: str,
+        image_path: Path | bytes | str | np.ndarray,
+        strategy: PymordialExtractStrategy | None = None,
+        max_gap: int = 1,
+    ) -> tuple[int, int] | None:
+        """Finds coordinates of a multi-word phrase across consecutive OCR boxes.
+
+        Tesseract often splits phrases like "Security and privacy" into separate
+        per-word boxes. This method searches consecutive OCR boxes whose combined
+        text matches ``search_text`` (case-insensitive, substring), returning the
+        center of the combined bounding box.
+
+        Args:
+            search_text: Multi-word phrase to search for.
+            image_path: Source image as Path, bytes, string, or numpy array.
+            strategy: Optional preprocessing strategy.
+            max_gap: Maximum number of non-matching boxes allowed between
+                consecutive phrase words (default 1, tolerating OCR noise).
+
+        Returns:
+            (center_x, center_y) coordinates of the phrase's bounding box center,
+            or None if not found.
+        """
+        try:
+            image = self._load_image(image_path)
+            strat = strategy or DefaultExtractStrategy()
+            processed = strat.preprocess(image)
+
+            tess_config = (
+                getattr(strat, "tesseract_config", lambda: self.config)() or self.config
+            )
+            data = pytesseract.image_to_data(
+                processed, config=tess_config, output_type=pytesseract.Output.DICT
+            )
+
+            search_words = [w for w in search_text.lower().strip().split() if w]
+            if not search_words:
+                return None
+
+            n_boxes = len(data.get("text", []))
+            upscale = getattr(strat, "upscale_factor", 1) or 1
+
+            # Collect valid boxes with text, position, and confidence.
+            boxes: list[dict] = []
+            for i in range(n_boxes):
+                conf = int(data["conf"][i])
+                if conf <= 0:
+                    continue
+                box_text = data["text"][i].strip().lower()
+                if not box_text:
+                    continue
+                boxes.append(
+                    {
+                        "text": box_text,
+                        "left": int(data["left"][i]),
+                        "top": int(data["top"][i]),
+                        "width": int(data["width"][i]),
+                        "height": int(data["height"][i]),
+                    }
+                )
+
+            # Sliding window: try each starting box as phrase word 0.
+            for start in range(len(boxes)):
+                wi = 0  # index into search_words
+                bi = start  # index into boxes
+                gap = 0
+                matched_boxes: list[dict] = []
+
+                while bi < len(boxes) and wi < len(search_words):
+                    bt = boxes[bi]["text"]
+                    sw = search_words[wi]
+
+                    if sw in bt:
+                        matched_boxes.append(boxes[bi])
+                        # Consume ALL search words that appear in this same box.
+                        # Tesseract may put an entire phrase in one box.
+                        while wi + 1 < len(search_words):
+                            next_sw = search_words[wi + 1]
+                            if next_sw in bt:
+                                wi += 1
+                            else:
+                                break
+                        wi += 1
+                        gap = 0
+                    elif gap < max_gap:
+                        gap += 1
+                    else:
+                        break
+                    bi += 1
+
+                if wi == len(search_words) and matched_boxes:
+                    # Compute combined bounding box center.
+                    x_min = min(b["left"] for b in matched_boxes)
+                    y_min = min(b["top"] for b in matched_boxes)
+                    x_max = max(b["left"] + b["width"] for b in matched_boxes)
+                    y_max = max(b["top"] + b["height"] for b in matched_boxes)
+                    center_x = int((x_min + x_max) // 2 / upscale)
+                    center_y = int((y_min + y_max) // 2 / upscale)
+                    return (center_x, center_y)
+
+            return None
+        except Exception as e:
+            log.error(f"Error finding phrase '{search_text}' with Tesseract: {e}")
+            return None
+
 
 __all__ = [
     "TesseractDevice",

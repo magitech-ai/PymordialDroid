@@ -305,6 +305,80 @@ class AndroidController(PymordialController):
             return self.click_coord(coords, times=times)
         return False
 
+    def find_and_tap_phrase(
+        self,
+        phrase: str,
+        times: int = 1,
+        max_tries: int = 1,
+    ) -> bool:
+        """Finds a multi-word phrase via OCR and taps its center.
+
+        Uses :meth:`TesseractDevice.find_text_phrase` to match phrases that
+        Tesseract splits across multiple per-word boxes (e.g. "Security and
+        privacy"). Captures a fresh screenshot, locates the phrase, and taps
+        its combined bounding-box center.
+
+        Args:
+            phrase: Multi-word phrase to search for (case-insensitive).
+            times: Number of taps to perform at the found coordinates.
+            max_tries: Maximum detection attempts per screenshot.
+
+        Returns:
+            True if the phrase was found and tapped, False otherwise.
+
+        Example:
+            controller.find_and_tap_phrase("Security and privacy")
+        """
+        for _ in range(max_tries):
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                return False
+            coords = self.ocr.find_text_phrase(
+                phrase, screenshot, strategy=None, max_gap=1
+            )
+            if coords is not None:
+                return self.click_coord(coords, times=times)
+        return False
+
+    def wait_for_element(
+        self,
+        pymordial_element: PymordialElement,
+        timeout: float = 10.0,
+        interval: float = 0.5,
+    ) -> bool:
+        """Polls the screen until an element becomes visible.
+
+        Captures a screenshot every ``interval`` seconds and runs element
+        detection. Returns True as soon as the element is found, or False
+        when the timeout expires. Useful for waiting for app launches,
+        page navigations, or dialogs to appear.
+
+        Args:
+            pymordial_element: The element to wait for.
+            timeout: Maximum seconds to wait.
+            interval: Seconds between detection attempts.
+
+        Returns:
+            True when the element is found, False on timeout.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                time.sleep(interval)
+                continue
+            coords = self.find_element(
+                pymordial_element,
+                pymordial_screenshot=screenshot,
+                max_tries=1,
+            )
+            if coords is not None:
+                return True
+            time.sleep(interval)
+        return False
+
     def open_app(
         self,
         app_name: str | AndroidApp,
