@@ -1020,6 +1020,165 @@ class AndroidController(PymordialController):
         # Normalize to 0.0-1.0
         return min(1.0, mean_diff / 255.0)
 
+    # --- GESTURE PATTERN RECOGNITION ---
+
+    def recognize_swipe_pattern(
+        self,
+        events: list[dict],
+        change_threshold: float = 0.15,
+        min_duration_s: float = 0.1,
+    ) -> list[dict]:
+        """Analyze recorded gesture events to detect swipe patterns.
+
+        Since we cannot directly intercept touch events on a non-rooted
+        device, this method infers swipe gestures from screen changes
+        captured by :meth:`record_gesture`. It looks for consecutive
+        events with significant change scores and estimates the swipe
+        direction based on which region of the screen changed most.
+
+        Args:
+            events: List of gesture events from :meth:`record_gesture`.
+            change_threshold: Minimum change score (0.0 to 1.0) to
+                consider an event as part of a swipe.
+            min_duration_s: Minimum duration (seconds) for a recognized
+                swipe pattern.
+
+        Returns:
+            List of recognized swipe patterns, each with:
+                - start_timestamp: Seconds since recording start
+                - end_timestamp: Seconds since recording start
+                - duration_s: Duration of the swipe
+                - direction: "up", "down", "left", "right", or "unknown"
+                - max_change_score: Peak change score during the swipe
+
+        Example:
+            gestures = controller.record_gesture(duration_seconds=5.0)
+            patterns = controller.recognize_swipe_pattern(gestures)
+            for p in patterns:
+                print(f"{p['direction']} swipe at {p['start_timestamp']:.1f}s")
+        """
+
+        if not events:
+            return []
+
+        patterns = []
+        i = 0
+        while i < len(events):
+            # Find the start of a potential swipe (significant change)
+            if events[i].get("change_score", 0.0) < change_threshold:
+                i += 1
+                continue
+
+            start_idx = i
+            start_ts = events[i]["timestamp"]
+            max_change = events[i].get("change_score", 0.0)
+
+            # Extend the swipe while changes continue
+            i += 1
+            while (
+                i < len(events)
+                and events[i].get("change_score", 0.0) >= change_threshold * 0.5
+            ):
+                max_change = max(max_change, events[i].get("change_score", 0.0))
+                i += 1
+
+            end_ts = events[i - 1]["timestamp"]
+            duration = end_ts - start_ts
+
+            if duration < min_duration_s - 1e-9:
+                continue
+
+            # Estimate direction by comparing frame content at start vs end
+            direction = self._estimate_swipe_direction(events[start_idx], events[i - 1])
+
+            patterns.append(
+                {
+                    "start_timestamp": start_ts,
+                    "end_timestamp": end_ts,
+                    "duration_s": duration,
+                    "direction": direction,
+                    "max_change_score": max_change,
+                }
+            )
+
+        return patterns
+
+    def _estimate_swipe_direction(
+        self,
+        start_event: dict,
+        end_event: dict,
+    ) -> str:
+        """Estimate swipe direction by comparing two frame screenshots.
+
+        Decodes both screenshots and divides each into a 3x3 grid.
+        Compares the change in each grid cell to determine which
+        region changed most, inferring the swipe direction.
+
+        Returns:
+            One of: "up", "down", "left", "right", "unknown"
+        """
+        import base64
+
+        import cv2
+        import numpy as np
+
+        try:
+            start_bytes = base64.b64decode(start_event["screenshot_b64"])
+            end_bytes = base64.b64decode(end_event["screenshot_b64"])
+
+            start_nparr = np.frombuffer(start_bytes, np.uint8)
+            end_nparr = np.frombuffer(end_bytes, np.uint8)
+
+            start_frame = cv2.imdecode(start_nparr, cv2.IMREAD_GRAYSCALE)
+            end_frame = cv2.imdecode(end_nparr, cv2.IMREAD_GRAYSCALE)
+
+            if start_frame is None or end_frame is None:
+                return "unknown"
+
+            if start_frame.shape != end_frame.shape:
+                end_frame = cv2.resize(
+                    end_frame, (start_frame.shape[1], start_frame.shape[0])
+                )
+
+            h, w = start_frame.shape
+            grid_h, grid_w = h // 3, w // 3
+
+            # Compute change in each 3x3 grid cell
+            cell_changes = []
+            for gy in range(3):
+                for gx in range(3):
+                    y1, y2 = gy * grid_h, (gy + 1) * grid_h
+                    x1, x2 = gx * grid_w, (gx + 1) * grid_w
+                    cell_start = start_frame[y1:y2, x1:x2]
+                    cell_end = end_frame[y1:y2, x1:x2]
+                    diff = cv2.absdiff(cell_start, cell_end)
+                    cell_changes.append((gy, gx, float(np.mean(diff))))
+
+            # Find the cell with the most change
+            cell_changes.sort(key=lambda c: c[2], reverse=True)
+            if not cell_changes or cell_changes[0][2] < 5.0:
+                return "unknown"
+
+            gy, gx, _ = cell_changes[0]
+
+            # Map grid position to direction
+            # Top rows -> swipe down (content moving down)
+            # Bottom rows -> swipe up (content moving up)
+            # Left cols -> swipe right (content moving right)
+            # Right cols -> swipe left (content moving left)
+            if gy == 0:
+                return "down"
+            elif gy == 2:
+                return "up"
+            elif gx == 0:
+                return "right"
+            elif gx == 2:
+                return "left"
+            else:
+                return "unknown"
+        except Exception:
+            return "unknown"
+
     # --- APP USAGE TRACKING ---
 
     def track_app_usage(
@@ -1071,6 +1230,93 @@ class AndroidController(PymordialController):
             time.sleep(sample_interval)
 
         return records
+
+    def app_usage_sessionize(
+        self,
+        records: list[dict],
+        session_gap_seconds: float = 30.0,
+    ) -> list[dict]:
+        """Group app usage records into sessions based on time gaps.
+
+        Consecutive app changes that occur within ``session_gap_seconds``
+        of each other are grouped into the same session. A larger gap
+        starts a new session. Useful for understanding how users actually
+        interact with apps over time.
+
+        Args:
+            records: List of usage records from :meth:`track_app_usage`,
+                each with "timestamp", "app", and "state" keys.
+            session_gap_seconds: Maximum gap (seconds) between consecutive
+                app changes to consider them part of the same session.
+
+        Returns:
+            List of sessions, each with:
+                - start_timestamp: Seconds since tracking start
+                - end_timestamp: Seconds since tracking start
+                - duration_s: Duration of the session
+                - apps: List of app package names used in the session
+                - app_changes: Number of app switches within the session
+
+        Example:
+            usage = controller.track_app_usage(duration_seconds=120.0,
+                                               sample_interval=2.0)
+            sessions = controller.app_usage_sessionize(usage,
+                                                       session_gap_seconds=15.0)
+            for s in sessions:
+                print(f"Session: {s['apps']} ({s['duration_s']:.0f}s)")
+        """
+        if not records:
+            return []
+
+        sessions = []
+        current_session = {
+            "start_timestamp": records[0]["timestamp"],
+            "end_timestamp": records[0]["timestamp"],
+            "apps": [],
+            "app_changes": 0,
+        }
+        seen_apps = set()
+
+        for record in records:
+            app = record["app"]
+            timestamp = record["timestamp"]
+
+            if app and app not in seen_apps:
+                seen_apps.add(app)
+                current_session["apps"].append(app)
+
+            # Check if this record starts a new session
+            if timestamp - current_session["end_timestamp"] > session_gap_seconds:
+                # Finalize current session
+                current_session["duration_s"] = (
+                    current_session["end_timestamp"]
+                    - current_session["start_timestamp"]
+                )
+                current_session["app_changes"] = len(current_session["apps"]) - 1
+                sessions.append(current_session)
+
+                # Start new session
+                current_session = {
+                    "start_timestamp": timestamp,
+                    "end_timestamp": timestamp,
+                    "apps": [],
+                    "app_changes": 0,
+                }
+                seen_apps = set()
+                if app:
+                    seen_apps.add(app)
+                    current_session["apps"].append(app)
+
+            current_session["end_timestamp"] = timestamp
+
+        # Finalize last session
+        current_session["duration_s"] = (
+            current_session["end_timestamp"] - current_session["start_timestamp"]
+        )
+        current_session["app_changes"] = len(current_session["apps"]) - 1
+        sessions.append(current_session)
+
+        return sessions
 
     # --- SCREEN CHANGE CAPTURE ---
 
