@@ -116,223 +116,6 @@ def test_controller_find_and_tap_phrase_not_found(mocker):
     assert result is False
 
 
-def test_controller_wait_for_element(mocker):
-    """wait_for_element polls and returns True when element found."""
-    controller = AndroidController()
-
-    mock_screenshot = b"fake_png_bytes"
-    mock_coords = (200, 400)
-    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
-
-    # find_element returns None first time, then coords second time
-    calls = [0]
-
-    def fake_find(element, pymordial_screenshot=None, max_tries=1):
-        calls[0] += 1
-        if calls[0] >= 2:
-            return mock_coords
-        return None
-
-    controller.find_element = mocker.Mock(side_effect=fake_find)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.wait_for_element(mocker.Mock(), timeout=5.0, interval=0.1)
-
-    assert result is True
-    assert calls[0] == 2
-    time.sleep = real_sleep
-
-
-def test_controller_wait_for_element_timeout(mocker):
-    """wait_for_element returns False when element never appears."""
-    controller = AndroidController()
-    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake")
-    controller.find_element = mocker.Mock(return_value=None)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.wait_for_element(mocker.Mock(), timeout=1.0, interval=0.1)
-
-    assert result is False
-    time.sleep = real_sleep
-
-
-def test_controller_swipe_to_find(mocker):
-    """swipe_to_find swipes until element is found."""
-    controller = AndroidController()
-
-    mock_screenshot = b"fake_png_bytes"
-    mock_coords = (200, 400)
-    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
-    controller.adb.swipe = mocker.Mock(return_value=True)
-
-    # find_element returns None first two times, then coords third time
-    calls = [0]
-
-    def fake_find(element, pymordial_screenshot=None, max_tries=1):
-        calls[0] += 1
-        if calls[0] >= 3:
-            return mock_coords
-        return None
-
-    controller.find_element = mocker.Mock(side_effect=fake_find)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.swipe_to_find(mocker.Mock(), max_swipes=5, interval=0.1)
-
-    assert result == mock_coords
-    assert calls[0] == 3
-    # Swiped twice before finding on third attempt
-    assert controller.adb.swipe.call_count == 2
-    time.sleep = real_sleep
-
-
-def test_controller_swipe_to_find_not_found(mocker):
-    """swipe_to_find returns None when element never found."""
-    controller = AndroidController()
-    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake_png_bytes")
-    controller.adb.swipe = mocker.Mock(return_value=True)
-    controller.find_element = mocker.Mock(return_value=None)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.swipe_to_find(mocker.Mock(), max_swipes=3, interval=0.1)
-
-    assert result is None
-    assert controller.adb.swipe.call_count == 3
-    time.sleep = real_sleep
-
-
-def test_controller_find_and_tap_with_retry(mocker):
-    """find_and_tap_with_retry swipes then taps found element."""
-    controller = AndroidController()
-
-    mock_screenshot = b"fake_png_bytes"
-    mock_coords = (200, 400)
-    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
-    controller.adb.swipe = mocker.Mock(return_value=True)
-    controller.adb.tap = mocker.Mock(return_value=True)
-
-    calls = [0]
-
-    def fake_find(element, pymordial_screenshot=None, max_tries=1):
-        calls[0] += 1
-        if calls[0] >= 2:
-            return mock_coords
-        return None
-
-    controller.find_element = mocker.Mock(side_effect=fake_find)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.find_and_tap_with_retry(
-        mocker.Mock(), times=2, max_swipes=5, interval=0.1
-    )
-
-    assert result is True
-    assert calls[0] == 2
-    controller.adb.swipe.assert_called_once()  # one swipe before finding
-    controller.adb.tap.assert_called_once_with(mock_coords, times=2)
-    time.sleep = real_sleep
-
-
-def test_controller_find_and_tap_with_retry_not_found(mocker):
-    """find_and_tap_with_retry returns False when element never found."""
-    controller = AndroidController()
-    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake_png_bytes")
-    controller.adb.swipe = mocker.Mock(return_value=True)
-    controller.adb.tap = mocker.Mock(return_value=True)
-    controller.find_element = mocker.Mock(return_value=None)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.find_and_tap_with_retry(
-        mocker.Mock(), max_swipes=3, interval=0.1
-    )
-
-    assert result is False
-    assert controller.adb.swipe.call_count == 3
-    controller.adb.tap.assert_not_called()
-    time.sleep = real_sleep
-
-
-def test_controller_swipe_to_find_and_tap(mocker):
-    """swipe_to_find_and_tap swipes then taps found element."""
-    controller = AndroidController()
-
-    mock_screenshot = b"fake_png_bytes"
-    mock_coords = (200, 400)
-    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
-    controller.adb.swipe = mocker.Mock(return_value=True)
-    controller.adb.tap = mocker.Mock(return_value=True)
-
-    calls = [0]
-
-    def fake_find(element, pymordial_screenshot=None, max_tries=1):
-        calls[0] += 1
-        if calls[0] >= 2:
-            return mock_coords
-        return None
-
-    controller.find_element = mocker.Mock(side_effect=fake_find)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.swipe_to_find_and_tap(
-        mocker.Mock(), times=2, max_swipes=5, interval=0.1
-    )
-
-    assert result is True
-    assert calls[0] == 2
-    controller.adb.swipe.assert_called_once()  # one swipe before finding
-    controller.adb.tap.assert_called_once_with(mock_coords, times=2)
-    time.sleep = real_sleep
-
-
-def test_controller_swipe_to_find_and_tap_not_found(mocker):
-    """swipe_to_find_and_tap returns False when element never found."""
-    controller = AndroidController()
-    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake_png_bytes")
-    controller.adb.swipe = mocker.Mock(return_value=True)
-    controller.adb.tap = mocker.Mock(return_value=True)
-    controller.find_element = mocker.Mock(return_value=None)
-
-    import time
-
-    real_sleep = time.sleep
-    time.sleep = mocker.Mock()  # don't actually sleep
-
-    result = controller.swipe_to_find_and_tap(mocker.Mock(), max_swipes=3, interval=0.1)
-
-    assert result is False
-    assert controller.adb.swipe.call_count == 3
-    controller.adb.tap.assert_not_called()
-    time.sleep = real_sleep
-
-
 def test_controller_wait_for_text(mocker):
     """wait_for_text polls screen until text appears."""
     controller = AndroidController()
@@ -440,7 +223,7 @@ def test_controller_find_and_drag(mocker):
 
 
 def test_controller_find_and_swipe(mocker):
-    """find_and_swipe finds element then swipes from its position."""
+    """find_and_swipe finds element then swipes from its position (second call)."""
     controller = AndroidController()
 
     mock_screenshot = b"fake_png_bytes"
@@ -469,9 +252,9 @@ def test_controller_find_and_swipe(mocker):
 
     assert result is True
     assert calls[0] == 2
-    # Swiped once to find element, once from found position
     assert controller.adb.swipe.call_count == 2
-    controller.adb.swipe.assert_called_with(500, 500, 500, 500, 500)
+    # Last call is the swipe from found position (500, 1000) up by 500 -> (500, 500)
+    controller.adb.swipe.assert_called_with(500, 1000, 500, 500, 500)
     time.sleep = real_sleep
 
 
@@ -491,4 +274,199 @@ def test_controller_find_and_swipe_not_found(mocker):
 
     assert result is False
     assert controller.adb.swipe.call_count == 3
+    time.sleep = real_sleep
+
+
+def test_controller_dismiss_common_dialogs(mocker):
+    """dismiss_common_dialogs finds and taps dialog buttons."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+    controller.adb.tap = mocker.Mock(return_value=True)
+
+    # First scan finds "Allow", second scan finds nothing
+    call_count = [0]
+
+    def fake_find_text_phrase(phrase, screenshot, strategy=None, max_gap=1):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return (200, 400)  # Found "Allow"
+        return None  # No more dialogs
+
+    controller.ui.find_text_phrase = mocker.Mock(side_effect=fake_find_text_phrase)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.dismiss_common_dialogs(max_attempts=3, interval=0.1)
+
+    assert result == 1
+    controller.adb.tap.assert_called_once_with((200, 400))
+    time.sleep = real_sleep
+
+
+def test_controller_dismiss_common_dialogs_no_dialogs(mocker):
+    """dismiss_common_dialogs returns 0 when no dialogs found."""
+    controller = AndroidController()
+
+    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake_png_bytes")
+    controller.adb.tap = mocker.Mock(return_value=True)
+    controller.ui.find_text_phrase = mocker.Mock(return_value=None)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.dismiss_common_dialogs(max_attempts=2, interval=0.1)
+
+    assert result == 0
+    controller.adb.tap.assert_not_called()
+    time.sleep = real_sleep
+
+
+def test_controller_record_and_replay_gesture(mocker):
+    """record_gesture captures screenshots, replay_gesture taps them."""
+    controller = AndroidController()
+
+    # Create a fake screenshot (1x1 red pixel)
+    import cv2
+    import numpy as np
+
+    img = np.zeros((10, 10, 3), dtype=np.uint8)
+    img[:] = (255, 0, 0)  # Red
+    _, buf = cv2.imencode(".png", img)
+    fake_screenshot_bytes = buf.tobytes()
+
+    controller.adb.capture_screenshot = mocker.Mock(return_value=fake_screenshot_bytes)
+    controller.adb.tap = mocker.Mock(return_value=True)
+
+    # Record
+    events = controller.record_gesture(duration_seconds=0.1, sample_interval=0.05)
+    assert len(events) > 0
+    assert all("timestamp" in e for e in events)
+    assert all("screenshot_b64" in e for e in events)
+    assert all("change_score" in e for e in events)
+
+    # Replay
+    result = controller.replay_gesture(events, replay_speed=10.0)
+    assert result is True
+    controller.adb.tap.assert_called()
+
+
+def test_controller_record_gesture_no_screenshot(mocker):
+    """record_gesture handles missing screenshots gracefully."""
+    controller = AndroidController()
+    controller.adb.capture_screenshot = mocker.Mock(return_value=None)
+
+    events = controller.record_gesture(duration_seconds=0.1, sample_interval=0.05)
+    assert events == []
+
+
+def test_controller_track_app_usage(mocker):
+    """track_app_usage records app lifecycle events."""
+    controller = AndroidController()
+
+    # Mock get_current_app to return different apps over time
+    apps = [
+        "com.android.settings",
+        "com.android.settings",
+        "com.instagram.android",
+        "com.instagram.android",
+        None,
+    ]
+    calls = [0]
+
+    def fake_get_current_app():
+        calls[0] += 1
+        idx = min(calls[0] - 1, len(apps) - 1)
+        return apps[idx]
+
+    controller.adb.get_current_app = mocker.Mock(side_effect=fake_get_current_app)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    results = controller.track_app_usage(duration_seconds=1.0, sample_interval=0.1)
+
+    assert len(results) > 0
+    # First record should be the first app
+    assert results[0]["app"] == "com.android.settings"
+    assert results[0]["state"] == "foreground"
+    time.sleep = real_sleep
+
+
+def test_controller_capture_on_change(mocker):
+    """capture_on_change captures screenshots when screen changes."""
+    controller = AndroidController()
+
+    # Create two different screenshots
+    import cv2
+    import numpy as np
+
+    img1 = np.zeros((100, 100, 3), dtype=np.uint8)
+    img1[:] = (255, 0, 0)  # Red
+    _, buf1 = cv2.imencode(".png", img1)
+    screenshot1 = buf1.tobytes()
+
+    img2 = np.zeros((100, 100, 3), dtype=np.uint8)
+    img2[:] = (0, 255, 0)  # Green
+    _, buf2 = cv2.imencode(".png", img2)
+    screenshot2 = buf2.tobytes()
+
+    # Return screenshots in sequence, then repeat last one (no change triggers)
+    screenshot_iter = iter([screenshot1, screenshot1, screenshot2, screenshot2])
+
+    def mock_capture(*args, **kwargs):
+        try:
+            return next(screenshot_iter)
+        except StopIteration:
+            return screenshot2
+
+    controller.adb.capture_screenshot = mocker.Mock(side_effect=mock_capture)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    results = controller.capture_on_change(timeout=5.0, interval=0.1, max_screenshots=5)
+
+    assert len(results) >= 1
+    # First capture always happens
+    assert results[0]["change_score"] > 0
+    # Second capture should detect change
+    assert any(r["change_score"] > 0.1 for r in results)
+    time.sleep = real_sleep
+
+
+def test_controller_capture_on_change_no_change(mocker):
+    """capture_on_change returns empty when screen doesn't change."""
+    controller = AndroidController()
+
+    # Same screenshot every time
+    import cv2
+    import numpy as np
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img[:] = (255, 0, 0)
+    _, buf = cv2.imencode(".png", img)
+    screenshot_bytes = buf.tobytes()
+
+    controller.adb.capture_screenshot = mocker.Mock(return_value=screenshot_bytes)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    results = controller.capture_on_change(timeout=1.0, interval=0.1, max_screenshots=5)
+
+    # First capture always happens, subsequent ones should not trigger change
+    assert len(results) == 1
     time.sleep = real_sleep

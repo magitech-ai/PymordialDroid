@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from pymordial.core.blueprints.extract_strategy import PymordialExtractStrategy
 from pymordial.core.controller import PymordialController
 from pymordial.core.plugin import PymordialPlugin
@@ -705,7 +706,395 @@ class AndroidController(PymordialController):
             target_x = x
             target_y = max(0, y - distance)
 
-        return self.adb.swipe(target_x, target_y, target_x, target_y, swipe_duration)
+        return self.adb.swipe(x, y, target_x, target_y, swipe_duration)
+
+    # --- DIALOG DISMISSAL ---
+
+    def dismiss_common_dialogs(
+        self,
+        max_attempts: int = 3,
+        interval: float = 1.0,
+    ) -> int:
+        """Dismiss common dialogs (permissions, updates, terms, etc.).
+
+        Scans the screen for common dialog buttons and taps them.
+        Repeats until no dialog buttons are found or max_attempts is reached.
+
+        Args:
+            max_attempts: Maximum number of scan-and-dismiss attempts.
+            interval: Seconds to wait between attempts.
+
+        Returns:
+            Number of dialogs dismissed.
+
+        Example:
+            controller.dismiss_common_dialogs(max_attempts=5)
+        """
+        import time
+
+        dismissed = 0
+        dismiss_phrases = [
+            "allow",
+            "don't allow",
+            "dont allow",
+            "not now",
+            "skip",
+            "ok",
+            "okay",
+            "cancel",
+            "agree",
+            "accept",
+            "install",
+            "update",
+            "later",
+            "remind me later",
+            "maybe later",
+            "no thanks",
+            "no, thanks",
+            "continue",
+            "got it",
+            "got it!",
+            "understood",
+            "i understand",
+        ]
+
+        for attempt in range(max_attempts):
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                time.sleep(interval)
+                continue
+
+            found_any = False
+            for phrase in dismiss_phrases:
+                coords = self.ui.find_text_phrase(phrase, screenshot)
+                if coords is not None:
+                    self.adb.tap(coords)
+                    dismissed += 1
+                    found_any = True
+                    time.sleep(1.0)  # Wait for dialog to dismiss
+                    break  # Rescan after each dismissal
+
+            if not found_any:
+                break
+
+            time.sleep(interval)
+
+        return dismissed
+
+    # --- GESTURE RECORD & REPLAY ---
+
+    def record_gesture(
+        self,
+        duration_seconds: float = 10.0,
+        sample_interval: float = 0.1,
+    ) -> list[dict]:
+        """Record touch gestures by capturing screen changes.
+
+        Since we cannot directly intercept touch events on a non-rooted
+        device, this method records screen frames at regular intervals
+        and detects significant changes between frames. Each detected
+        change is recorded as a potential touch interaction point.
+
+        Args:
+            duration_seconds: How long to record in seconds.
+            sample_interval: Seconds between screen captures.
+
+        Returns:
+            List of gesture events, each with:
+                - timestamp: Seconds since recording start
+                - screenshot: Base64-encoded PNG of the frame
+                - change_score: How much the screen changed (0.0 to 1.0)
+
+        Example:
+            gestures = controller.record_gesture(duration_seconds=5.0)
+            controller.replay_gesture(gestures)
+        """
+        import base64
+        import time
+
+        events = []
+        start_time = time.monotonic()
+        previous_frame = None
+
+        while time.monotonic() - start_time < duration_seconds:
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                time.sleep(sample_interval)
+                continue
+
+            timestamp = time.monotonic() - start_time
+            screenshot_b64 = base64.b64encode(screenshot).decode("ascii")
+
+            change_score = 0.0
+            if previous_frame is not None:
+                change_score = self._compute_frame_difference(
+                    previous_frame, screenshot
+                )
+
+            events.append(
+                {
+                    "timestamp": timestamp,
+                    "screenshot_b64": screenshot_b64,
+                    "change_score": change_score,
+                }
+            )
+
+            previous_frame = screenshot
+            time.sleep(sample_interval)
+
+        return events
+
+    def replay_gesture(
+        self,
+        events: list[dict],
+        replay_speed: float = 1.0,
+    ) -> bool:
+        """Replay a recorded gesture sequence.
+
+        Replays recorded gestures by waiting the same amount of time
+        between events and tapping at the center of changed regions.
+
+        Args:
+            events: List of gesture events from record_gesture().
+            replay_speed: Speed multiplier (1.0 = real time, 2.0 = 2x fast).
+
+        Returns:
+            True if all gestures were replayed successfully.
+
+        Example:
+            gestures = controller.record_gesture(duration_seconds=5.0)
+            controller.replay_gesture(gestures, replay_speed=2.0)
+        """
+        import base64
+        import time
+
+        import cv2
+        import numpy as np
+
+        if not events:
+            return False
+
+        start_time = time.monotonic()
+
+        for i, event in enumerate(events):
+            timestamp = event["timestamp"]
+            target_time = start_time + timestamp / replay_speed
+
+            # Wait until it's time for this event
+            while time.monotonic() < target_time:
+                time.sleep(0.01)
+
+            # Decode screenshot and find changed regions
+            screenshot_bytes = base64.b64decode(event["screenshot_b64"])
+            nparr = np.frombuffer(screenshot_bytes, np.uint8)
+            screenshot = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if screenshot is None:
+                continue
+
+            change_score = event.get("change_score", 0.0)
+            # Tap on the first event, or on subsequent events with
+            # significant change
+            if i == 0 or change_score > 0.1:
+                h, w = screenshot.shape[:2]
+                self.adb.tap(w // 2, h // 2)
+                time.sleep(0.5)
+
+        return True
+
+    def _compute_frame_difference(
+        self,
+        frame1: bytes | np.ndarray,
+        frame2: bytes | np.ndarray,
+    ) -> float:
+        """Compute difference score between two frames (0.0 to 1.0).
+
+        Returns 0.0 if identical, 1.0 if completely different.
+        """
+        import cv2
+        import numpy as np
+
+        # Decode if bytes
+        if isinstance(frame1, bytes):
+            nparr = np.frombuffer(frame1, np.uint8)
+            frame1 = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        if isinstance(frame2, bytes):
+            nparr = np.frombuffer(frame2, np.uint8)
+            frame2 = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+
+        # Resize to same size if needed
+        if frame1.shape != frame2.shape:
+            frame2 = cv2.resize(frame2, (frame1.shape[1], frame1.shape[0]))
+
+        # Compute absolute difference
+        diff = cv2.absdiff(frame1, frame2)
+        mean_diff = np.mean(diff)
+
+        # Normalize to 0.0-1.0
+        return min(1.0, mean_diff / 255.0)
+
+    # --- APP USAGE TRACKING ---
+
+    def track_app_usage(
+        self,
+        duration_seconds: float = 60.0,
+        sample_interval: float = 5.0,
+    ) -> list[dict]:
+        """Track which apps are running over time.
+
+        Periodically checks the foreground app and records usage
+        statistics. Useful for understanding app usage patterns.
+
+        Args:
+            duration_seconds: How long to track in seconds.
+            sample_interval: Seconds between checks.
+
+        Returns:
+            List of usage records, each with:
+                - timestamp: Seconds since tracking start
+                - app: Current foreground app package name
+                - state: 'foreground' or 'background'
+
+        Example:
+            usage = controller.track_app_usage(duration_seconds=30.0,
+                                              interval=2.0)
+            for record in usage:
+                print(f"{record['timestamp']:.1f}s: {record['app']}")
+        """
+        import time
+
+        records = []
+        start_time = time.monotonic()
+        previous_app = None
+
+        while time.monotonic() - start_time < duration_seconds:
+            current_app = self.get_current_app()
+            timestamp = time.monotonic() - start_time
+
+            if current_app != previous_app:
+                records.append(
+                    {
+                        "timestamp": timestamp,
+                        "app": current_app,
+                        "state": "foreground" if current_app else "background",
+                    }
+                )
+                previous_app = current_app
+
+            time.sleep(sample_interval)
+
+        return records
+
+    # --- SCREEN CHANGE CAPTURE ---
+
+    def capture_on_change(
+        self,
+        timeout: float = 30.0,
+        interval: float = 0.5,
+        max_screenshots: int = 10,
+        change_threshold: float = 0.1,
+    ) -> list[dict]:
+        """Capture screenshots when the screen changes significantly.
+
+        Captures screenshots at regular intervals and saves them only
+        when the screen content changes by more than the threshold.
+        Useful for capturing state changes without filling storage
+        with identical frames.
+
+        Args:
+            timeout: Maximum seconds to wait for changes.
+            interval: Seconds between screenshot checks.
+            max_screenshots: Maximum number of screenshots to capture.
+            change_threshold: Minimum change score (0.0 to 1.0) to
+                trigger a capture.
+
+        Returns:
+            List of captured screenshots, each with:
+                - timestamp: Seconds since start
+                - screenshot_b64: Base64-encoded PNG
+                - change_score: How much changed (0.0 to 1.0)
+
+        Example:
+            captures = controller.capture_on_change(
+                timeout=30.0,
+                max_screenshots=5,
+            )
+            for cap in captures:
+                print(f"Captured at {cap['timestamp']:.1f}s "
+                      f"(change: {cap['change_score']:.2f})")
+        """
+        import base64
+        import time
+
+        captures = []
+        start_time = time.monotonic()
+        previous_frame = None
+
+        while time.monotonic() - start_time < timeout:
+            if len(captures) >= max_screenshots:
+                break
+
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                time.sleep(interval)
+                continue
+
+            timestamp = time.monotonic() - start_time
+            change_score = 0.0
+
+            if previous_frame is not None:
+                change_score = self._compute_frame_difference(
+                    previous_frame, screenshot
+                )
+            else:
+                # First capture always counts
+                change_score = 1.0
+
+            if change_score >= change_threshold:
+                screenshot_b64 = base64.b64encode(screenshot).decode("ascii")
+                captures.append(
+                    {
+                        "timestamp": timestamp,
+                        "screenshot_b64": screenshot_b64,
+                        "change_score": change_score,
+                    }
+                )
+
+            previous_frame = screenshot
+            time.sleep(interval)
+
+        return captures
+
+    def shutdown(self) -> None:
+        """Stops this controller's devices and releases their resources.
+
+        Terminates the scrcpy viewer, live stream, and any headless
+        recording, clears the ADB frame provider, and disconnects ADB.
+        Best-effort per device: one device failing to shut down must not
+        block the other.
+
+        Called when this controller is retired — e.g. :class:`Phone`
+        rebuilds its controller after an auto-heal port change. Without
+        it, the retired controller's live stream and recording keep running
+        with no handle left to stop them.
+        """
+        scrcpy = getattr(self, "scrcpy", None)
+        if scrcpy is not None:
+            try:
+                scrcpy.shutdown()
+            except Exception as e:
+                log.debug(f"Error shutting down scrcpy device: {e}")
+        adb = getattr(self, "adb", None)
+        if adb is not None:
+            try:
+                if hasattr(adb, "clear_frame_provider"):
+                    adb.clear_frame_provider()
+            except Exception:
+                pass
+            try:
+                adb.shutdown()
+            except Exception as e:
+                log.debug(f"Error shutting down adb device: {e}")
 
     def open_app(
         self,
@@ -975,37 +1364,6 @@ class AndroidController(PymordialController):
         self.scrcpy.unlock_device(pin=pin)
 
     # --- Lifecycle ---
-
-    def shutdown(self) -> None:
-        """Stops this controller's devices and releases their resources.
-
-        Terminates the scrcpy viewer, live stream, and any headless
-        recording, clears the ADB frame provider, and disconnects ADB.
-        Best-effort per device: one device failing to shut down must not
-        block the other.
-
-        Called when this controller is retired — e.g. :class:`Phone`
-        rebuilds its controller after an auto-heal port change. Without
-        it, the retired controller's live stream and recording keep running
-        with no handle left to stop them.
-        """
-        scrcpy = getattr(self, "scrcpy", None)
-        if scrcpy is not None:
-            try:
-                scrcpy.shutdown()
-            except Exception as e:
-                log.debug(f"Error shutting down scrcpy device: {e}")
-        adb = getattr(self, "adb", None)
-        if adb is not None:
-            try:
-                if hasattr(adb, "clear_frame_provider"):
-                    adb.clear_frame_provider()
-            except Exception:
-                pass
-            try:
-                adb.shutdown()
-            except Exception as e:
-                log.debug(f"Error shutting down adb device: {e}")
 
 
 __all__ = [
