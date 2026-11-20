@@ -379,6 +379,102 @@ class AndroidController(PymordialController):
             time.sleep(interval)
         return False
 
+    def swipe_to_find(
+        self,
+        pymordial_element: PymordialElement,
+        max_swipes: int = 5,
+        swipe_distance: int = 1000,
+        swipe_duration: int = 500,
+        interval: float = 1.0,
+    ) -> tuple[int, int] | None:
+        """Scrolls the screen until an element is found.
+
+        Captures a screenshot, searches for the element, and if not found
+        swipes the screen and tries again. Useful for feeds, lists, and
+        other scrollable content where the target element may not be
+        immediately visible.
+
+        Args:
+            pymordial_element: The element to find.
+            max_swipes: Maximum number of swipe attempts.
+            swipe_distance: Distance to swipe in pixels (negative = up).
+            swipe_duration: Duration of each swipe in milliseconds.
+            interval: Seconds to wait between swipe attempts.
+
+        Returns:
+            (x, y) coordinates of the found element, or None if not found
+            after max_swipes attempts.
+
+        Example:
+            # Scroll until "Like" button is visible, then tap it
+            from pymordial.ui.text import PymordialText
+            element = PymordialText(
+                label="Like", element_text="Like", og_resolution=(1080, 2340),
+            )
+            coords = controller.swipe_to_find(element, max_swipes=10)
+            if coords:
+                controller.tap(coords)
+        """
+        import time
+
+        for attempt in range(max_swipes):
+            screenshot = self.adb.capture_screenshot()
+            if screenshot is None:
+                time.sleep(interval)
+                continue
+            coords = self.find_element(
+                pymordial_element,
+                pymordial_screenshot=screenshot,
+                max_tries=1,
+            )
+            if coords is not None:
+                return coords
+            # Swipe up to reveal more content
+            self.adb.swipe(500, 1600, 500, 600, swipe_duration)
+            time.sleep(interval)
+        return None
+
+    def find_and_tap_with_retry(
+        self,
+        pymordial_element: PymordialElement,
+        times: int = 1,
+        max_swipes: int = 5,
+        swipe_distance: int = 1000,
+        interval: float = 1.0,
+    ) -> bool:
+        """Finds an element by scrolling if necessary, then taps it.
+
+        Combines :meth:`swipe_to_find` with :meth:`click_coord`. Useful
+        for elements that may not be immediately visible (e.g. posts in a
+        feed, menu items below the fold).
+
+        Args:
+            pymordial_element: The element to find and tap.
+            times: Number of taps to perform at the found coordinates.
+            max_swipes: Maximum number of swipe attempts before giving up.
+            swipe_distance: Distance to swipe in pixels.
+            interval: Seconds to wait between swipe attempts.
+
+        Returns:
+            True if the element was found and tapped, False otherwise.
+
+        Example:
+            from pymordial.ui.text import PymordialText
+            element = PymordialText(
+                label="Like", element_text="Like", og_resolution=(1080, 2340),
+            )
+            controller.find_and_tap_with_retry(element, max_swipes=10)
+        """
+        coords = self.swipe_to_find(
+            pymordial_element,
+            max_swipes=max_swipes,
+            swipe_distance=swipe_distance,
+            interval=interval,
+        )
+        if coords is not None:
+            return self.click_coord(coords, times=times)
+        return False
+
     def open_app(
         self,
         app_name: str | AndroidApp,
