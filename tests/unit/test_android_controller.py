@@ -470,3 +470,141 @@ def test_controller_capture_on_change_no_change(mocker):
     # First capture always happens, subsequent ones should not trigger change
     assert len(results) == 1
     time.sleep = real_sleep
+
+
+def test_controller_auto_heal_on_port_change_already_correct(mocker):
+    """auto_heal_on_port_change returns True when port already matches and connected."""
+    controller = AndroidController()
+    controller.port = 5555
+    controller.adb.is_connected = mocker.Mock(return_value=True)
+    controller.adb._try_auto_heal_tcpip = mocker.Mock(return_value=False)
+
+    result = controller.auto_heal_on_port_change(expected_port=5555)
+
+    assert result is True
+    controller.adb._try_auto_heal_tcpip.assert_not_called()
+
+
+def test_controller_auto_heal_on_port_change_heals(mocker):
+    """auto_heal_on_port_change heals when port matches but connection is dead."""
+    controller = AndroidController()
+    controller.port = 5555
+    controller.adb.is_connected = mocker.Mock(return_value=False)
+    controller.adb._try_auto_heal_tcpip = mocker.Mock(return_value=True)
+    controller.adb.is_connected = mocker.Mock(return_value=True)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()
+
+    result = controller.auto_heal_on_port_change(expected_port=5555)
+
+    assert result is True
+    time.sleep = real_sleep
+
+
+def test_controller_wait_for_screen_transition(mocker):
+    """wait_for_screen_transition detects when from_text disappears and to_text appears."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+
+    # from_text visible first, then gone; to_text appears after
+    call_count = [0]
+
+    def fake_find_text(text_to_find, pymordial_screenshot=None, strategy=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return (200, 400)  # from_text still visible
+        if call_count[0] == 2:
+            return None  # from_text gone
+        if call_count[0] == 3:
+            return (300, 500)  # to_text found
+        return None
+
+    controller.ui.find_text = mocker.Mock(side_effect=fake_find_text)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()
+
+    result = controller.wait_for_screen_transition(
+        from_text="Old screen", to_text="New screen", timeout=10.0, interval=0.1
+    )
+
+    assert result is True
+    time.sleep = real_sleep
+
+
+def test_controller_wait_for_screen_transition_timeout(mocker):
+    """wait_for_screen_transition returns False on timeout."""
+    controller = AndroidController()
+    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake_png_bytes")
+    controller.ui.find_text = mocker.Mock(return_value=(100, 200))  # always found
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()
+
+    result = controller.wait_for_screen_transition(
+        from_text="Never leaves", to_text="Never arrives", timeout=1.0, interval=0.1
+    )
+
+    assert result is False
+    time.sleep = real_sleep
+
+
+def test_controller_read_text_caching(mocker):
+    """read_text caches results by image content."""
+    controller = AndroidController()
+
+    screenshot_bytes = b"fake_png_bytes"
+    ocr_result = ["Hello", "World"]
+
+    controller.ui.read_text = mocker.Mock(return_value=ocr_result)
+
+    # First call should invoke OCR
+    result1 = controller.read_text(screenshot_bytes)
+    assert result1 == ocr_result
+    controller.ui.read_text.assert_called_once()
+
+    # Second call with same bytes should return cached result
+    result2 = controller.read_text(screenshot_bytes)
+    assert result2 == ocr_result
+    # read_text should still only be called once (cached)
+    controller.ui.read_text.assert_called_once()
+
+
+def test_controller_read_text_cache_different_bytes(mocker):
+    """read_text calls OCR again for different image bytes."""
+    controller = AndroidController()
+
+    controller.ui.read_text = mocker.Mock(return_value=["Result"])
+
+    controller.read_text(b"screenshot_a")
+    controller.read_text(b"screenshot_b")
+
+    assert controller.ui.read_text.call_count == 2
+
+
+def test_controller_clear_ocr_cache(mocker):
+    """clear_ocr_cache removes all cached entries."""
+    controller = AndroidController()
+
+    controller.ui.read_text = mocker.Mock(return_value=["Cached"])
+
+    controller.read_text(b"screenshot_a")
+    controller.read_text(b"screenshot_b")
+
+    assert controller.ui.read_text.call_count == 2
+
+    cleared = controller.clear_ocr_cache()
+    assert cleared == 2
+
+    # After clearing, OCR should be called again
+    controller.read_text(b"screenshot_a")
+    assert controller.ui.read_text.call_count == 3
