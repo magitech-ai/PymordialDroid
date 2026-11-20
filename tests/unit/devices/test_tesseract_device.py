@@ -8,6 +8,25 @@ from pymordial.core.blueprints.ocr_device import PymordialOCRDevice
 
 from pymordialdroid.devices.tesseract_device import TesseractDevice
 from pymordialdroid.utils.extract_strategies import DefaultExtractStrategy
+from pymordialdroid.utils.ocr_preprocessing import ImageQuality
+
+
+@pytest.fixture
+def mock_image_quality(mocker):
+    """Mock measure_image_quality to return a quality with sufficient text height
+    so no upscaling happens during tests."""
+    mocker.patch(
+        "pymordialdroid.devices.tesseract_device.measure_image_quality",
+        return_value=ImageQuality(
+            width=100,
+            height=100,
+            mean_brightness=128.0,
+            brightness_std=40.0,
+            estimated_text_height_px=30.0,
+            noise_level=5.0,
+            is_dark_background=False,
+        ),
+    )
 
 
 def test_tesseract_device_satisfies_contract():
@@ -49,7 +68,7 @@ def test_extract_text_mocked():
         assert text == "Detected Text"
 
 
-def test_find_text_mocked():
+def test_find_text_mocked(mock_image_quality):
     """Test finding text bounding box and center coordinate calculation."""
     device = TesseractDevice()
     img = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -76,7 +95,7 @@ def test_find_text_mocked():
         assert coords_not_found is None
 
 
-def test_find_text_phrase_single_box():
+def test_find_text_phrase_single_box(mock_image_quality):
     """find_text_phrase matches a phrase within a single OCR box."""
     device = TesseractDevice()
     img = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -98,7 +117,7 @@ def test_find_text_phrase_single_box():
         assert coords == (50, 35)
 
 
-def test_find_text_phrase_across_boxes():
+def test_find_text_phrase_across_boxes(mock_image_quality):
     """find_text_phrase matches a phrase split across consecutive OCR boxes."""
     device = TesseractDevice()
     img = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -122,7 +141,7 @@ def test_find_text_phrase_across_boxes():
         assert coords == (85, 35)
 
 
-def test_find_text_phrase_with_gap():
+def test_find_text_phrase_with_gap(mock_image_quality):
     """find_text_phrase tolerates a non-matching box between phrase words."""
     device = TesseractDevice()
     img = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -149,7 +168,7 @@ def test_find_text_phrase_with_gap():
         assert coords == (95, 35)
 
 
-def test_find_text_phrase_not_found():
+def test_find_text_phrase_not_found(mock_image_quality):
     """find_text_phrase returns None when phrase is not present."""
     device = TesseractDevice()
     img = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -170,7 +189,7 @@ def test_find_text_phrase_not_found():
         assert coords is None
 
 
-def test_find_text_phrase_max_gap_zero():
+def test_find_text_phrase_max_gap_zero(mock_image_quality):
     """find_text_phrase with max_gap=0 requires adjacent boxes."""
     device = TesseractDevice()
     img = np.zeros((100, 100, 3), dtype=np.uint8)
