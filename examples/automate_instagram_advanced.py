@@ -17,12 +17,11 @@ Run with:
     uv run python examples/automate_instagram_advanced.py
 """
 
-from pathlib import Path
 import time
+from pathlib import Path
 
-from pymordialdroid.config import SystemConfig
 from pymordialdroid.android_controller import AndroidController
-from pymordial.ui.text import PymordialText
+from pymordialdroid.config import SystemConfig
 
 ADB_PATH = Path("/home/vanluther/.gemini/antigravity/scratch/revomon/platform-tools/adb")
 SCRCPY_PATH = Path("/tmp/dummy_scrcpy")
@@ -34,13 +33,9 @@ def dismiss_dialogs(controller: AndroidController, max_attempts: int = 3) -> Non
         screenshot = controller.adb.capture_screenshot()
         if screenshot is None:
             break
-        texts = controller.read_text(screenshot)
 
         # Look for common dialog buttons
         for phrase in ["Allow", "Don't allow", "Not Now", "Skip", "Later", "OK"]:
-            element = PymordialText(
-                label=phrase, element_text=phrase, og_resolution=(1080, 2340)
-            )
             coords = controller.ui.find_text_phrase(phrase, screenshot)
             if coords:
                 print(f"    Found '{phrase}' at {coords} - tapping")
@@ -49,7 +44,6 @@ def dismiss_dialogs(controller: AndroidController, max_attempts: int = 3) -> Non
                 screenshot = controller.adb.capture_screenshot()
                 if screenshot is None:
                     break
-                texts = controller.read_text(screenshot)
                 break
         else:
             # No dialog buttons found on this screen
@@ -136,7 +130,7 @@ def main() -> None:
                 posts_liked += 1
                 print(f"    ✓ Liked post #{posts_liked}")
             else:
-                print(f"    No likeable post found in this scroll")
+                print("    No likeable post found in this scroll")
 
         # Step 5: Final read
         print("\n[5/6] Final screen read...")

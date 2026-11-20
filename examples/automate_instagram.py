@@ -17,12 +17,13 @@ Run with:
     uv run python examples/automate_instagram.py
 """
 
-from pathlib import Path
 import time
+from pathlib import Path
 
-from pymordialdroid.config import SystemConfig
-from pymordialdroid.android_controller import AndroidController
 from pymordial.ui.text import PymordialText
+
+from pymordialdroid.android_controller import AndroidController
+from pymordialdroid.config import SystemConfig
 
 # Point at the ADB binary from the Android platform-tools
 ADB_PATH = Path("/home/vanluther/.gemini/antigravity/scratch/revomon/platform-tools/adb")
@@ -83,9 +84,6 @@ def main() -> None:
         print("\n[4/5] Finding and tapping feed content...")
         screenshot2 = controller.adb.capture_screenshot()
         for phrase in ["Reels", "Messages", "Profile", "Search", "Create"]:
-            element = PymordialText(
-                label=phrase, element_text=phrase, og_resolution=(1080, 2340)
-            )
             coords = controller.ui.find_text_phrase(phrase, screenshot2)
             if coords:
                 print(f"    Found '{phrase}' at {coords} - tapping...")
