@@ -274,3 +274,221 @@ def test_controller_find_and_tap_with_retry_not_found(mocker):
     assert controller.adb.swipe.call_count == 3
     controller.adb.tap.assert_not_called()
     time.sleep = real_sleep
+
+
+def test_controller_swipe_to_find_and_tap(mocker):
+    """swipe_to_find_and_tap swipes then taps found element."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    mock_coords = (200, 400)
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+    controller.adb.swipe = mocker.Mock(return_value=True)
+    controller.adb.tap = mocker.Mock(return_value=True)
+
+    calls = [0]
+
+    def fake_find(element, pymordial_screenshot=None, max_tries=1):
+        calls[0] += 1
+        if calls[0] >= 2:
+            return mock_coords
+        return None
+
+    controller.find_element = mocker.Mock(side_effect=fake_find)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.swipe_to_find_and_tap(
+        mocker.Mock(), times=2, max_swipes=5, interval=0.1
+    )
+
+    assert result is True
+    assert calls[0] == 2
+    controller.adb.swipe.assert_called_once()  # one swipe before finding
+    controller.adb.tap.assert_called_once_with(mock_coords, times=2)
+    time.sleep = real_sleep
+
+
+def test_controller_swipe_to_find_and_tap_not_found(mocker):
+    """swipe_to_find_and_tap returns False when element never found."""
+    controller = AndroidController()
+    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake_png_bytes")
+    controller.adb.swipe = mocker.Mock(return_value=True)
+    controller.adb.tap = mocker.Mock(return_value=True)
+    controller.find_element = mocker.Mock(return_value=None)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.swipe_to_find_and_tap(mocker.Mock(), max_swipes=3, interval=0.1)
+
+    assert result is False
+    assert controller.adb.swipe.call_count == 3
+    controller.adb.tap.assert_not_called()
+    time.sleep = real_sleep
+
+
+def test_controller_wait_for_text(mocker):
+    """wait_for_text polls screen until text appears."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+
+    # find_text returns None first time, then coords second time
+    calls = [0]
+
+    def fake_find_text(text_to_find, pymordial_screenshot=None, strategy=None):
+        calls[0] += 1
+        if calls[0] >= 2:
+            return (200, 400)
+        return None
+
+    controller.ui.find_text = mocker.Mock(side_effect=fake_find_text)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.wait_for_text("Connected devices", timeout=5.0, interval=0.1)
+
+    assert result is True
+    assert calls[0] == 2
+    time.sleep = real_sleep
+
+
+def test_controller_wait_for_text_timeout(mocker):
+    """wait_for_text returns False when text never appears."""
+    controller = AndroidController()
+    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake")
+    controller.ui.find_text = mocker.Mock(return_value=None)
+    controller.ui.find_text_phrase = mocker.Mock(return_value=None)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.wait_for_text("NonExistent", timeout=1.0, interval=0.1)
+
+    assert result is False
+    time.sleep = real_sleep
+
+
+def test_controller_tap_text(mocker):
+    """tap_text finds text and taps it."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    mock_coords = (150, 300)
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+    controller.ocr.find_text_phrase = mocker.Mock(return_value=mock_coords)
+    controller.adb.tap = mocker.Mock(return_value=True)
+
+    result = controller.tap_text("Connected devices", times=2)
+
+    assert result is True
+    controller.adb.capture_screenshot.assert_called_once()
+    controller.ocr.find_text_phrase.assert_called_once_with(
+        "Connected devices", mock_screenshot, strategy=None, max_gap=1
+    )
+    controller.adb.tap.assert_called_once_with(mock_coords, times=2)
+
+
+def test_controller_find_and_drag(mocker):
+    """find_and_drag finds element then drags to target coordinates."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    mock_coords = (100, 200)
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+    controller.adb.swipe = mocker.Mock(return_value=True)
+    controller.adb.precise_drag = mocker.Mock(return_value=True)
+
+    calls = [0]
+
+    def fake_find(element, pymordial_screenshot=None, max_tries=1):
+        calls[0] += 1
+        if calls[0] >= 2:
+            return mock_coords
+        return None
+
+    controller.find_element = mocker.Mock(side_effect=fake_find)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.find_and_drag(
+        mocker.Mock(), 400, 600, steps=5, step_delay_ms=10
+    )
+
+    assert result is True
+    assert calls[0] == 2
+    controller.adb.swipe.assert_called_once()  # one swipe before finding
+    controller.adb.precise_drag.assert_called_once_with(
+        100, 200, 400, 600, steps=5, step_delay_ms=10
+    )
+    time.sleep = real_sleep
+
+
+def test_controller_find_and_swipe(mocker):
+    """find_and_swipe finds element then swipes from its position."""
+    controller = AndroidController()
+
+    mock_screenshot = b"fake_png_bytes"
+    mock_coords = (500, 1000)
+    controller.adb.capture_screenshot = mocker.Mock(return_value=mock_screenshot)
+    controller.adb.swipe = mocker.Mock(return_value=True)
+
+    calls = [0]
+
+    def fake_find(element, pymordial_screenshot=None, max_tries=1):
+        calls[0] += 1
+        if calls[0] >= 2:
+            return mock_coords
+        return None
+
+    controller.find_element = mocker.Mock(side_effect=fake_find)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.find_and_swipe(
+        mocker.Mock(), direction="up", distance=500, max_swipes=5
+    )
+
+    assert result is True
+    assert calls[0] == 2
+    # Swiped once to find element, once from found position
+    assert controller.adb.swipe.call_count == 2
+    controller.adb.swipe.assert_called_with(500, 500, 500, 500, 500)
+    time.sleep = real_sleep
+
+
+def test_controller_find_and_swipe_not_found(mocker):
+    """find_and_swipe returns False when element never found."""
+    controller = AndroidController()
+    controller.adb.capture_screenshot = mocker.Mock(return_value=b"fake_png_bytes")
+    controller.adb.swipe = mocker.Mock(return_value=True)
+    controller.find_element = mocker.Mock(return_value=None)
+
+    import time
+
+    real_sleep = time.sleep
+    time.sleep = mocker.Mock()  # don't actually sleep
+
+    result = controller.find_and_swipe(mocker.Mock(), max_swipes=3, interval=0.1)
+
+    assert result is False
+    assert controller.adb.swipe.call_count == 3
+    time.sleep = real_sleep
